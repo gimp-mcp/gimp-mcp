@@ -9,7 +9,7 @@ description = "GIMP MCP integration for external control of GIMP 3.2"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "mcp",
     "fastmcp",
