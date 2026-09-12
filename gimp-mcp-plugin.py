@@ -521,7 +521,14 @@ class MCPPlugin(Gimp.PlugIn):
             
             # Use the first image (most recently active)
             original_image = images[0]
-            
+
+            # issue #17 fix: operate on a flattened composite duplicate so the
+            # bitmap reflects ALL visible layers (previously only the top layer
+            # was copied/exported). merge_visible keeps alpha, unlike flatten().
+            original_image = original_image.duplicate()
+            original_image.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+            composite_to_delete = original_image
+
             # Get original image dimensions
             orig_img_width = original_image.get_width()
             orig_img_height = original_image.get_height()
@@ -791,6 +798,11 @@ class MCPPlugin(Gimp.PlugIn):
                         working_image.delete()
                     except (AttributeError, RuntimeError) as e:
                         print(f"Warning: Failed to delete working temporary image: {e}")
+                # issue #17 fix: always drop the composite duplicate
+                try:
+                    composite_to_delete.delete()
+                except (AttributeError, RuntimeError, NameError) as e:
+                    print(f"Warning: Failed to delete composite duplicate: {e}")
                         
                 # Clean up the temporary file
                 if os.path.exists(temp_path):
@@ -1550,7 +1562,12 @@ class MCPPlugin(Gimp.PlugIn):
         from gi.repository import Gio
         if flatten:
             image = image.duplicate()
-            image.flatten()
+            # issue #16 fix: flatten() drops the alpha channel — only acceptable
+            # for JPEG. Alpha-capable formats use merge_visible_layers instead.
+            if str(fmt).lower() in ("jpeg", "jpg"):
+                image.flatten()
+            else:
+                image.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
             should_delete = True
         else:
             should_delete = False
