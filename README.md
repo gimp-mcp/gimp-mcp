@@ -290,6 +290,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | Tool | Description |
 |---|---|
 | `open_image` | Open image file |
+| `open_image_as_layer` | Import an image file as a new layer into an open image |
 | `export_image` | Export to PNG, JPEG, BMP, TIFF |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |

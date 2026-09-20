@@ -56,9 +56,17 @@ print(f"Existing layers: {len(metadata['structure']['layers'])}")
  "head_layer = Gimp.Layer.new(image, 'Head', width, height, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
  "image.insert_layer(head_layer, None, 0)",
 
- "details_layer = Gimp.Layer.new(image, 'Details', width, height, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
- "image.insert_layer(details_layer, None, 0)"]
+  "details_layer = Gimp.Layer.new(image, 'Details', width, height, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+  "image.insert_layer(details_layer, None, 0)"]
 ```
+
+To bring in an existing image file (texture, reference, cutout, background) as a layer
+instead of creating an empty one, use the `open_image_as_layer` tool:
+
+```
+open_image_as_layer(file_path=".../texture.png", scale="fit", layer_name="Texture")
+```
+
 
 ### Phase 3: Incremental Drawing with Validation
 

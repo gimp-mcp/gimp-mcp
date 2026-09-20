@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+import os
 import socket
 import json
 import sys
+
+AS_LAYER_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'tests', 'continuous_edit_test', 'files', 'winry_joy.png')
 
 def cmd(t, params=None):
     s = socket.socket()
@@ -116,6 +120,18 @@ t('modify_sel',     cmd('modify_selection', {'image_index': 0, 'operation': 'gro
 
 print()
 print("=== Cat 5: Layers ===")
+t('open_as_layer',   cmd('open_image_as_layer', {'file_path': AS_LAYER_SRC, 'image_index': 0}))
+_ll = cmd('list_layers', {'image_index': 0})
+chk('open_as_layer_present',
+    any(layer.get('name') == 'winry_joy' for layer in _ll.get('results', {}).get('layers', [])),
+    _ll.get('results'))
+_r_fit = t('open_as_layer_fit',
+           cmd('open_image_as_layer', {'file_path': AS_LAYER_SRC, 'image_index': 0,
+                                       'layer_name': 'fit_copy', 'scale': 'fit'}))
+chk('open_as_layer_fit_sized',
+    0 < _r_fit.get('results', {}).get('width', 0) <= 120
+    and 0 < _r_fit.get('results', {}).get('height', 0) <= 120,
+    _r_fit.get('results'))
 t('create_layer',    cmd('create_layer',     {'image_index': 0, 'name': 'TLayer', 'width': 80, 'height': 80}))
 t('duplicate_layer', cmd('duplicate_layer',  {'image_index': 0}))
 t('list_layers2',    cmd('list_layers',      {'image_index': 0}))
