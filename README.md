@@ -391,7 +391,12 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 |---|---|
 | `layer.copy(False)` → error | `layer.copy()` takes no args in GIMP 3.2 |
 | `Gimp.text_fontname()` removed | Use PDB `gimp-text-fontname` |
-| `gimp-blend` removed | Use GEGL `gegl:linear-gradient` / `gegl:radial-gradient` |
+| `gimp-blend` removed | PDB `gimp-drawable-edit-gradient-fill` with a two-stop `Gimp.Gradient` set in the context (`gegl:linear-gradient` does not exist in 3.2) |
+| `gimp-levels-stretch`, `plug-in-gauss`, `plug-in-unsharp-mask`, `plug-in-iwarp` removed | `gimp-drawable-levels-stretch` and GEGL filters (`gegl:gaussian-blur`, `gegl:unsharp-mask`, …); liquify moves are done with the smudge tool |
+| GEGL filters silently do nothing | They only take effect via `gimp-drawable-filter-new` → `filter.get_config()` (properties live on the *config*, not the filter) → `drawable.append_filter()` → `filter.update()` → `gimp-drawable-merge-filters` |
+| `Gimp.get_displays()` / `Gimp.file_overwrite` absent | Track the displays this server created (`Gimp.Display.new` return value); a closed image takes its windows with it |
+| No undo/redo procedure | `gimp-image-undo` was removed; `undo`/`redo` report that instead of pretending |
+| `Gegl.Color.new()` is a lossy parser | Unknown names (e.g. `lightsteelblue`) silently become cyan and `rgb(100,200,50)` is read as 0-1 *linear* floats, so colours are parsed explicitly in the plugin |
 | `GimpDoubleArray` TypeError in curves | Use `drawable.curves_spline()` directly |
 | `Gimp.fonts_get_list()` returns `Font` objects | Convert via `.get_name()` before JSON serialization |
 | `image.select_none()` removed | Use PDB `gimp-selection-none` |
