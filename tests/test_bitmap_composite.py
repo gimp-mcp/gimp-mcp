@@ -127,10 +127,12 @@ from gi.repository import Gimp, Gio
 import json as _json
 
 snapshot = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path({snapshot_path!r}))
-layer = snapshot.get_layers()[0]
-pixels = [layer.get_pixel(4, 4).get_rgba(), layer.get_pixel(24, 24).get_rgba()]
-print("COMPOSITE_TEST_PIXELS:" + _json.dumps(pixels))
-snapshot.delete()
+try:
+    layer = snapshot.get_layers()[0]
+    pixels = [layer.get_pixel(4, 4).get_rgba(), layer.get_pixel(24, 24).get_rgba()]
+    print("COMPOSITE_TEST_PIXELS:" + _json.dumps(pixels))
+finally:
+    snapshot.delete()
 """
         pixels = json.loads(extract_marker(execute(inspect_code), "COMPOSITE_TEST_PIXELS:"))
         assert_primary_color(pixels[0], "blue")
