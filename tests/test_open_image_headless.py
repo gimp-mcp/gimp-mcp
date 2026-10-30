@@ -64,7 +64,12 @@ def install_gi_stub(display_raises=False):
             def new(image):
                 if display_raises:
                     raise ValueError("constructor returned NULL")
-                return None
+                # Distinct sentinel so the success path yields a truthy display.
+                return object()
+
+        @staticmethod
+        def displays_flush():
+            pass
 
         @staticmethod
         def main(gtype, argv):
@@ -108,12 +113,15 @@ def load_plugin():
     return mod
 
 
-def main():
-    install_gi_stub(display_raises=True)
-    mod = load_plugin()
-    plugin = mod.MCPPlugin()
-    res = plugin._open_image({"file_path": "/tmp/fake-test-image.png"})
+def run_case(mod, plugin, display_raises, expect_display_opened):
+    """Call _open_image under a fresh stub and check metadata + display flag.
 
+    Fresh stubs per case? Not possible — the plugin module is imported once
+    against one stub. Instead the stub's Display.new consults the flag
+    captured at install time, so each case needs its own module import with
+    its own stub. Returns a list of failure descriptions (empty = pass).
+    """
+    res = plugin._open_image({"file_path": "/tmp/fake-test-image.png"})
     failures = []
     if res.get("status") != "success":
         failures.append(f"status={res.get('status')!r}, expected 'success' "
@@ -127,17 +135,36 @@ def main():
         failures.append(f"height={results.get('height')!r}, expected 240")
     if results.get("color_mode") != "RGB":
         failures.append(f"color_mode={results.get('color_mode')!r}, expected 'RGB'")
-    if results.get("display_opened") is not False:
+    if results.get("display_opened") is not expect_display_opened:
         failures.append(f"display_opened={results.get('display_opened')!r}, "
-                        "expected False in headless mode")
+                        f"expected {expect_display_opened}")
+    return failures
+
+
+def main():
+    # Case 1: headless — Display.new raises, image must survive with
+    # display_opened False.
+    install_gi_stub(display_raises=True)
+    case1 = mod = load_plugin()
+    f1 = run_case(mod, mod.MCPPlugin(), True, False)
+
+    # Case 2: graphical success path — Display.new succeeds; a regression
+    # that always reports False would be caught here.
+    install_gi_stub(display_raises=False)
+    case2 = load_plugin()
+    f2 = run_case(case2, case2.MCPPlugin(), False, True)
+
+    failures = [f"headless case: {f}" for f in f1] + \
+               [f"graphical case: {f}" for f in f2]
 
     if failures:
         print("FAIL: test_open_image_headless")
         for f in failures:
             print("  -", f)
         return 1
-    print("PASS: test_open_image_headless — _open_image survives "
-          "Gimp.Display.new() failure and reports display_opened: False")
+    print("PASS: test_open_image_headless — _open_image reports "
+          "display_opened False when Gimp.Display.new() fails and True when "
+          "it succeeds")
     return 0
 
 
