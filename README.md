@@ -10,7 +10,7 @@
 
 ![GIMP MCP in action — AI agent driving GIMP through natural language](docs/mcpInAction.gif)
 
-Full demo (with audio): https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
+Full demo (with audio): https://github.com/gimp-mcp/gimp-mcp/raw/main/docs/demo.mp4
 
 *AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
 
@@ -84,7 +84,7 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ### 1. Install Dependencies
 
 ```bash
-git clone https://github.com/maorcc/gimp-mcp.git
+git clone https://github.com/gimp-mcp/gimp-mcp.git
 cd gimp-mcp
 uv sync
 ```
