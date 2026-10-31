@@ -29,6 +29,7 @@ import signal
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+TEMP_IMAGE_PARASITE = "gimp-mcp-temp"  # Marks images the plug-in creates for one command
 
 
 def N_(message): return message
@@ -482,7 +483,7 @@ class MCPPlugin(Gimp.PlugIn):
             # Extract parameters
             max_width = params.get("max_width")
             max_height = params.get("max_height")
-            image_index = int(params.get("image_index", 0))
+            image_index = params.get("image_index", 0)
 
             # Extract region parameters if provided
             region = params.get("region", {})
@@ -512,11 +513,12 @@ class MCPPlugin(Gimp.PlugIn):
             scaled_to_width = region.get("max_width")  # Region scaling uses max_width/max_height
             scaled_to_height = region.get("max_height")
 
-            # Select the requested image (default 0 = most recently active)
-            if image_index < 0:
+            # Select the requested image (default 0 = most recently active);
+            # int() would turn -0.5 into a valid 0, so require an integer
+            if isinstance(image_index, bool) or not isinstance(image_index, int) or image_index < 0:
                 return {
                     "status": "error",
-                    "error": f"image_index must be non-negative, got {image_index}"
+                    "error": f"image_index must be a non-negative integer, got {image_index!r}"
                 }
             try:
                 original_image = self._get_image(image_index)
@@ -567,34 +569,27 @@ class MCPPlugin(Gimp.PlugIn):
                                f"requested region: ({origin_x},{origin_y}) {region_width}x{region_height}"
                     }
 
-            # Determine working image and region; temporary images are deleted in finally
-            working_image = original_image
-            should_delete_working = False
-            final_image = original_image
-            should_delete_final = False
+            # Render the visible composite of the region or the full image into a
+            # temporary image, deleted in finally. Filters crossing the region edge
+            # apply before the cut, so a region equals the same rectangle of the full
+            # bitmap; only one layer is copied, and the user's selection and
+            # clipboard stay untouched
+            final_image = None
             temp_path = None
 
             try:
-                # Case 1: Region selection
                 if region_requested:
                     print("Processing region extraction...")
-
-                    # Crop a duplicate: export then flattens all visible layers, and the
-                    # user's selection and clipboard stay untouched
-                    working_image = original_image.duplicate()
-                    should_delete_working = True
-                    working_image.crop(region_width, region_height, origin_x, origin_y)
-
+                    final_image = self._render_visible(original_image, origin_x, origin_y,
+                                                       region_width, region_height)
                 else:
-                    # Case 2: Full image
                     print("Processing full image...")
-
-                # Now handle scaling if needed
-                final_image = working_image
+                    final_image = self._render_visible(original_image, 0, 0,
+                                                       orig_img_width, orig_img_height)
 
                 # Calculate target dimensions
-                current_width = working_image.get_width()
-                current_height = working_image.get_height()
+                current_width = final_image.get_width()
+                current_height = final_image.get_height()
                 target_width = current_width
                 target_height = current_height
                 
@@ -617,20 +612,16 @@ class MCPPlugin(Gimp.PlugIn):
                     if aspect_ratio > max_aspect_ratio:
                         # Width is the limiting factor
                         target_width = max_w
-                        target_height = int(max_w / aspect_ratio)
+                        target_height = max(1, int(max_w / aspect_ratio))
                     else:
                         # Height is the limiting factor
                         target_height = max_h
-                        target_width = int(max_h * aspect_ratio)
+                        target_width = max(1, int(max_h * aspect_ratio))
                     
                     print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
 
                     # Scale the image if dimensions changed
                     if target_width != current_width or target_height != current_height:
-                        # Create scaled image (deleted in finally, also when scaling fails)
-                        final_image = working_image.duplicate()
-                        should_delete_final = True
-
                         # Scale the image with timeout consideration for large operations
                         scaling_ratio = (target_width * target_height) / (current_width * current_height)
                         if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
@@ -736,17 +727,12 @@ class MCPPlugin(Gimp.PlugIn):
                 }
                 
             finally:
-                # Clean up temporary images
-                if should_delete_final and final_image != working_image:
+                # Clean up the temporary image
+                if final_image is not None:
                     try:
                         final_image.delete()
                     except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete final temporary image: {e}")
-                if should_delete_working and working_image != original_image:
-                    try:
-                        working_image.delete()
-                    except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete working temporary image: {e}")
+                        print(f"Warning: Failed to delete temporary image: {e}")
                         
                 # Clean up the temporary file
                 if temp_path and os.path.exists(temp_path):
@@ -765,7 +751,7 @@ class MCPPlugin(Gimp.PlugIn):
             print("Getting current image metadata...")
             
             # Get the current images
-            images = Gimp.get_images()
+            images = self._open_images()
             if not images:
                 return {
                     "status": "error",
@@ -1064,7 +1050,7 @@ class MCPPlugin(Gimp.PlugIn):
             
             # Current session information
             try:
-                images = Gimp.get_images()
+                images = self._open_images()
                 gimp_info["session"] = {
                     "num_open_images": len(images),
                     "has_open_images": len(images) > 0,
@@ -1454,9 +1440,35 @@ class MCPPlugin(Gimp.PlugIn):
     # SHARED HELPERS
     # =========================================================================
 
+    def _open_images(self):
+        """Return Gimp.get_images() without the temporary images of running commands.
+
+        A new image goes first in Gimp.get_images(), so a temporary image would
+        shift the image_index of every other image while it exists.
+        """
+        return [image for image in Gimp.get_images()
+                if image.get_parasite(TEMP_IMAGE_PARASITE) is None]
+
+    def _render_visible(self, image, x, y, width, height):
+        """Return a temporary image holding the visible composite of a rectangle of image.
+
+        The caller deletes it; until then _open_images skips it.
+        """
+        temp = Gimp.Image.new(width, height, Gimp.ImageBaseType.RGB)
+        try:
+            temp.attach_parasite(Gimp.Parasite.new(TEMP_IMAGE_PARASITE, 0, b"1"))
+            layer = Gimp.Layer.new_from_visible(image, temp, "visible")
+            temp.insert_layer(layer, None, 0)
+            layer.set_offsets(-x, -y)
+            layer.resize_to_image_size()
+        except Exception:
+            temp.delete()
+            raise
+        return temp
+
     def _get_image(self, image_index):
-        """Return the image at image_index from Gimp.get_images(), raise if none open."""
-        images = Gimp.get_images()
+        """Return the image at image_index from _open_images(), raise if none open."""
+        images = self._open_images()
         if not images:
             raise RuntimeError("No images are currently open in GIMP")
         if image_index >= len(images):
@@ -1689,7 +1701,7 @@ class MCPPlugin(Gimp.PlugIn):
             name_pattern = params.get("name_pattern", "{name}")
             image_index  = params.get("image_index", None)
 
-            images = Gimp.get_images()
+            images = self._open_images()
             if not images:
                 return {"status": "error", "error": "No images open"}
 
@@ -3560,7 +3572,7 @@ class MCPPlugin(Gimp.PlugIn):
             height          = params.get("height", None)
             scale_factor    = params.get("scale_factor", None)
             maintain_aspect = bool(params.get("maintain_aspect", True))
-            images  = Gimp.get_images()
+            images  = self._open_images()
             results = []
             for img in images:
                 src_w = img.get_width()
@@ -3607,7 +3619,7 @@ class MCPPlugin(Gimp.PlugIn):
             import math
 
             if source == "images":
-                frames = Gimp.get_images()
+                frames = self._open_images()
             else:
                 src_image = self._get_image(image_index)
                 frames = src_image.get_layers()
@@ -3720,7 +3732,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _list_images(self, params):
         """List all open images."""
         try:
-            images = Gimp.get_images()
+            images = self._open_images()
             image_list = []
             base_type_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",
