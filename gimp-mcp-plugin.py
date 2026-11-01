@@ -1658,8 +1658,15 @@ class MCPPlugin(Gimp.PlugIn):
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            display = Gimp.Display.new(image)
-            Gimp.displays_flush()
+            # Headless runs (gimp -i) have no display backend: Gimp.Display.new()
+            # raises "constructor returned NULL" there even though the image loaded
+            # fine, which made open_image fail after every successful load.
+            try:
+                display = Gimp.Display.new(image)
+                Gimp.displays_flush()
+            except Exception as display_err:
+                display = None
+                print(f"[MCP] Display creation skipped (headless?): {display_err}")
             base_type = image.get_base_type()
             mode_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",
