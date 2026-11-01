@@ -130,6 +130,8 @@ print()
 print("=== Cat 6: Drawing ===")
 t('fill_layer',     cmd('fill_layer',     {'image_index': 0, 'color': '#ff0000'}))
 t('set_colors',     cmd('set_colors',     {'foreground': '#000000', 'background': '#ffffff'}))
+# fill_layer replaces and then clears the selection, so make one again first.
+t('select_for_fill', cmd('select_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20}))
 t('fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground'}))
 t('draw_line',      cmd('draw_line',      {'image_index': 0, 'x1': 0, 'y1': 0, 'x2': 50, 'y2': 50, 'color': '#000000', 'width': 2}))
 t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#0000ff', 'line_width': 2.0}))
