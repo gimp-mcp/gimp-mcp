@@ -496,3 +496,7 @@ To bump the pinned hook versions later:
 ```bash
 uv run pre-commit autoupdate
 ```
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
