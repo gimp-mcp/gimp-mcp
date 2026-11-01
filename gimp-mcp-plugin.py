@@ -56,6 +56,9 @@ class MCPPlugin(Gimp.PlugIn):
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
+        # image_id -> Gimp.Display for windows we opened; needed to close them
+        # before deleting the image (gimp-image-delete fails while a display is open).
+        self._mcp_displays = {}
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -272,6 +275,8 @@ class MCPPlugin(Gimp.PlugIn):
             # ── Category 1: File Operations ──────────────────────────────────
             elif "type" in j and j["type"] == "open_image":
                 return self._open_image(j.get("params", {}))
+            elif "type" in j and j["type"] == "open_image_as_layer":
+                return self._open_image_as_layer(j.get("params", {}))
             elif "type" in j and j["type"] == "save_xcf":
                 return self._save_xcf(j.get("params", {}))
             elif "type" in j and j["type"] == "export_image":
@@ -1470,7 +1475,8 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
+            display = Gimp.Display.new(image)
+            self._displays()[image.get_id()] = display
             Gimp.displays_flush()
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
@@ -1659,6 +1665,7 @@ class MCPPlugin(Gimp.PlugIn):
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
             display = Gimp.Display.new(image)
+            self._displays()[image.get_id()] = display
             Gimp.displays_flush()
             base_type = image.get_base_type()
             mode_map = {
@@ -1679,6 +1686,111 @@ class MCPPlugin(Gimp.PlugIn):
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _open_image_as_layer(self, params):
+        """Import an image file as a new layer in an open image (File > Open as Layers)."""
+        try:
+            from gi.repository import Gio
+            file_path = params.get("file_path", "")
+            if not file_path:
+                return {"status": "error", "error": "file_path is required"}
+            image_index = int(params.get("image_index", 0))
+            layer_name = params.get("layer_name") or os.path.splitext(os.path.basename(file_path))[0]
+            position = int(params.get("position", -1))
+            scale = str(params.get("scale") or "none").lower()
+            offset_x = int(params.get("offset_x", 0))
+            offset_y = int(params.get("offset_y", 0))
+            if scale not in ("none", "fit", "canvas"):
+                return {"status": "error", "error": f"Invalid scale '{scale}' (use 'none', 'fit' or 'canvas')"}
+
+            target = self._get_image(image_index)
+            gio_file = Gio.File.new_for_path(file_path)
+            loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
+            if loaded is None:
+                return {"status": "error", "error": f"Could not open file: {file_path}"}
+            src = loaded
+            try:
+                if len(loaded.get_layers()) > 1:
+                    # Composite multi-layer sources into a single layer.
+                    src = loaded.duplicate()
+                    src.flatten()
+                src_layers = src.get_layers()
+                if not src_layers:
+                    return {"status": "error", "error": f"Source image has no layers: {file_path}"}
+                src_drawable = src_layers[0]
+                src_w = src_drawable.get_width()
+                src_h = src_drawable.get_height()
+
+                pdb = Gimp.get_pdb()
+                proc = pdb.lookup_procedure("gimp-layer-new-from-drawable")
+                if proc is None:
+                    return {"status": "error", "error": "gimp-layer-new-from-drawable not available in this GIMP"}
+                target.undo_group_start()
+                try:
+                    cfg = proc.create_config()
+                    cfg.set_property("drawable", src_drawable)
+                    cfg.set_property("dest-image", target)
+                    result = proc.run(cfg)
+                    # GIMP 3.2 returns a ValueArray whose first entry is the status;
+                    # scan for the layer so we're robust to ordering changes.
+                    layer = None
+                    for i in range(result.length()):
+                        value = result.index(i)
+                        if isinstance(value, Gimp.Layer):
+                            layer = value
+                            break
+                    if layer is None:
+                        raise RuntimeError("gimp-layer-new-from-drawable did not return a layer")
+                    layer.set_name(layer_name)
+                    # The layer must be in the image before gimp-layer-scale takes effect.
+                    target.insert_layer(layer, None, position)
+                    if scale == "fit":
+                        factor = min(target.get_width() / src_w, target.get_height() / src_h)
+                        new_w = max(1, int(round(src_w * factor)))
+                        new_h = max(1, int(round(src_h * factor)))
+                        self._scale_layer_pdb(layer, new_w, new_h)
+                    elif scale == "canvas":
+                        self._scale_layer_pdb(layer, target.get_width(), target.get_height())
+                    layer.set_offsets(offset_x, offset_y)
+                finally:
+                    target.undo_group_end()
+                Gimp.displays_flush()
+                return {
+                    "status": "success",
+                    "results": {
+                        "layer_name":  layer.get_name(),
+                        "layer_id":    layer.get_id(),
+                        "width":       layer.get_width(),
+                        "height":      layer.get_height(),
+                        "offset_x":    offset_x,
+                        "offset_y":    offset_y,
+                        "position":    position,
+                        "source_width":  src_w,
+                        "source_height": src_h,
+                    }
+                }
+            finally:
+                # Release the temporary source image(s); `loaded` and `src` may be
+                # the same object for single-layer files, so dedupe.
+                for im in dict.fromkeys((loaded, src)):
+                    try:
+                        self._delete_image(im)
+                    except Exception:
+                        pass
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _scale_layer_pdb(self, layer, new_width, new_height):
+        """Scale a layer to new_width x new_height via PDB gimp-layer-scale."""
+        proc = Gimp.get_pdb().lookup_procedure("gimp-layer-scale")
+        if proc is None:
+            raise RuntimeError("gimp-layer-scale not available in this GIMP")
+        cfg = proc.create_config()
+        cfg.set_property("layer", layer)
+        cfg.set_property("new-width", new_width)
+        cfg.set_property("new-height", new_height)
+        cfg.set_property("local-origin", 0)
+        proc.run(cfg)
 
     def _save_xcf(self, params):
         """Save image as XCF."""
@@ -3882,6 +3994,36 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    def _displays(self):
+        """Map of image_id -> Gimp.Display we opened (lazy init for old instances)."""
+        d = getattr(self, "_mcp_displays", None)
+        if d is None:
+            d = {}
+            self._mcp_displays = d
+        return d
+
+    def _delete_image(self, image):
+        """Delete an image via the PDB. Gimp.Image.delete() is unreliable in the
+        GIMP 3.2 binding (a no-op while a display window is open), so the PDB
+        `gimp-image-delete` procedure is the dependable path. Returns True if the
+        image is gone afterwards."""
+        if image is None:
+            return True
+        try:
+            img_id = image.get_id()
+        except Exception:
+            return True
+        pdb = Gimp.get_pdb()
+        proc = pdb.lookup_procedure("gimp-image-delete")
+        if proc:
+            cfg = proc.create_config()
+            cfg.set_property("image", image)
+            proc.run(cfg)
+        else:
+            image.delete()
+        Gimp.displays_flush()
+        return not any(im.get_id() == img_id for im in Gimp.get_images())
+
     def _close_image(self, params):
         """Close an image, optionally saving first."""
         try:
@@ -3904,14 +4046,24 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("image", image)
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
-            # Delete all displays for this image
-            for display in Gimp.get_displays():
+            # A display window must be closed before the image can be deleted:
+            # `gimp-image-delete` returns a non-SUCCESS status while a display is
+            # open. GIMP 3.2 exposes no display-listing API and Display has no
+            # get_image(), so we delete the display we tracked for this image.
+            img_id = image.get_id()
+            tracked = self._displays().pop(img_id, None)
+            if tracked is not None:
                 try:
-                    if display.get_image().get_id() == image.get_id():
-                        Gimp.Display.delete(display)
+                    tracked.delete()
                 except Exception:
                     pass
-            image.delete()
+            if not self._delete_image(image):
+                return {
+                    "status": "error",
+                    "error": ("Image could not be closed: it has an open display "
+                              "window that is not tracked (likely opened in the GIMP "
+                              "GUI). Close that window in GIMP and retry."),
+                }
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -3944,6 +4096,16 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             pixel    = drawable.get_pixel(x, y)
+            # Out of this layer's bounds -> get_pixel returns None; report transparent.
+            if pixel is None:
+                return {
+                    "status": "success",
+                    "results": {
+                        "color_hex": "#000000",
+                        "color_rgb": [0, 0, 0],
+                        "alpha": 0,
+                    }
+                }
             # GIMP 3.2: get_pixel returns a Gegl.Color object
             if hasattr(pixel, 'get_rgba'):
                 rf, gf, bf, af = pixel.get_rgba()

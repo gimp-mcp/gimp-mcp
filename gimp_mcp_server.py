@@ -543,6 +543,61 @@ def open_image(ctx: Context, file_path: str) -> dict:
 
 
 @mcp.tool()
+def open_image_as_layer(
+    ctx: Context,
+    file_path: str,
+    image_index: int = 0,
+    layer_name: str | None = None,
+    position: int = -1,
+    scale: str = "none",
+    offset_x: int = 0,
+    offset_y: int = 0
+) -> dict:
+    """Import an existing image file as a new layer into an open image (like File > Open as Layers).
+
+    Use this while editing a picture to bring in another image (texture, reference,
+    cutout, background) as a layer on top of the work. The file is loaded without
+    opening a new GIMP image window; its contents become a single new layer in the
+    target image. Multi-layer source files are flattened to one composite layer.
+    The source image is not kept open afterwards.
+
+    Parameters:
+    - file_path: Absolute path to the image file to import (PNG, JPEG, TIFF, etc.)
+    - image_index: Index of the target image to add the layer to (default 0)
+    - layer_name: Name for the new layer (default: source file name without extension)
+    - position: Layer stack position — -1 = top (default), 0 = bottom
+    - scale: "none" = natural size (default), "fit" = scale to fit within the canvas
+             preserving aspect ratio, "canvas" = stretch to exact canvas size
+    - offset_x: X offset of the layer's top-left corner within the canvas (default 0)
+    - offset_y: Y offset of the layer's top-left corner within the canvas (default 0)
+
+    Returns:
+    - layer_name, layer_id: identity of the imported layer
+    - width / height: layer size after scaling
+    - offset_x, offset_y: layer position within the canvas
+    - position: layer stack position
+    - source_width, source_height: original dimensions of the imported file
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("open_image_as_layer", {
+            "file_path": file_path,
+            "image_index": image_index,
+            "layer_name": layer_name,
+            "position": position,
+            "scale": scale,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+        })
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"open_image_as_layer failed: {e}")
+
+
+@mcp.tool()
 def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
     """Save the current image as a GIMP XCF file (preserves all layers and metadata).
 
