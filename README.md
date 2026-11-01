@@ -33,7 +33,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
 | 🎨 **79 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
-| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (58/58 passing) |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (59/59 passing) |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
 | 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
@@ -378,7 +378,7 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 
 | Script | Description |
 |---|---|
-| [`run_tests.py`](run_tests.py) | 58-test suite — run against your GIMP to verify all tools work |
+| [`run_tests.py`](run_tests.py) | 59-test suite — run against your GIMP to verify all tools work |
 | [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
 | [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
 | [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
@@ -388,7 +388,7 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 Run the test suite to verify your setup:
 ```bash
 python run_tests.py
-# Expected: 58/58 PASSED
+# Expected: 59/59 PASSED
 ```
 
 ---
