@@ -11,8 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp",
-    "fastmcp",
+    "mcp>=1.28.1,<2",
 ]
 
 [project.scripts]

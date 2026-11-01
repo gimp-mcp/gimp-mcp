@@ -85,7 +85,7 @@ def reset_gimp_connection():
     _gimp_connection = None
 
 # MCP server
-mcp = FastMCP("GimpMCP", description="GIMP integration through MCP — with new_canvas, check_server, restart_server")
+mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
 @mcp.tool()
 def check_server(ctx: Context) -> dict:
