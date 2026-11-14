@@ -6,6 +6,8 @@ auto_levels on it. GIMP rejects the edit, so the tool must return
 status "error" and the pixels must be unchanged. It then unlocks the layer
 and calls auto_levels again, which must succeed and stretch the contrast;
 that shows the lock is what blocked the first call.
+fill_layer on the locked layer must also return an error (its edit_fill
+returns False rather than raising, #115) and clear its temporary selection.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). Watch GIMP while it runs: the rejected call should not
@@ -114,6 +116,17 @@ def main():
         if abs(locked_after - before) > 1e-6:
             fail(f"pixels changed on a locked layer: std_dev {before:.4f} -> {locked_after:.4f}")
         print("PASS: locked layer -> status error, pixels unchanged")
+
+        # A direct libgimp call (edit_fill) returns False instead of raising (#115).
+        r = cmd('fill_layer', {'image_index': image_index(), 'layer_name': LAYER, 'color': 'red'})
+        print(f"fill_layer on locked layer: {json.dumps(r)[:300]}")
+        if r.get('status') != 'error':
+            fail("fill_layer on a locked layer reported success")
+        if abs(std_dev() - before) > 1e-6:
+            fail("fill_layer changed the pixels of a locked layer")
+        if py("print(Gimp.Selection.is_empty(_pdbtest_img))") != "True":
+            fail("fill_layer left its temporary selection after the fill failed")
+        print("PASS: fill_layer on locked layer -> status error, pixels unchanged, selection cleared")
 
         py("_pdbtest_layer.set_lock_content(False)")
         r = auto_levels()

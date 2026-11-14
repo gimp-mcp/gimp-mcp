@@ -7,7 +7,9 @@ _run_pdb() must turn a non-SUCCESS status into an exception, and
 _lookup_pdb() must raise for a missing procedure, so handlers return
 {"status": "error"} instead of a false success. Call sites that have a real
 alternative for a missing procedure (_blur's GEGL filter, _save_xcf's
-Gimp.file_overwrite) must still use it.
+Gimp.file_overwrite) must still use it. Direct libgimp calls (edit_fill,
+image.crop, ...) return False instead of raising, and handlers must report
+that as an error too (#115).
 
 Stubs gi.repository so the plugin imports without a running GIMP.
 Exits 0 on pass, 1 on fail.
@@ -35,6 +37,9 @@ EXECUTION_ERROR = Status("execution-error")
 # name -> (status, error message or None). Set per scenario.
 PDB_PROCS = {}
 CALLS = []  # (what, detail) records of side effects, cleared per scenario
+# What direct libgimp calls (edit_fill, image.crop, file_overwrite, ...) return.
+# libgimp returns False instead of raising when GIMP rejects the call (#115).
+DIRECT_OK = {"value": True}
 
 
 class FakeValueArray:
@@ -94,6 +99,19 @@ class FakeDrawable:
 
 
 class FakeImage:
+    def _direct(self, what):
+        CALLS.append(("image", what))
+        return DIRECT_OK["value"]
+
+    def crop(self, *a):
+        return self._direct("crop")
+
+    def scale(self, *a):
+        return self._direct("scale")
+
+    def flip(self, *a):
+        return self._direct("flip")
+
     def select_rectangle(self, *a):
         CALLS.append(("select", "rectangle"))
 
@@ -141,10 +159,42 @@ def install_gi_stub():
         class ChannelOps:
             REPLACE = 2
 
+        class InterpolationType:
+            NONE, LINEAR, CUBIC = range(3)
+
+        class OrientationType:
+            HORIZONTAL, VERTICAL = range(2)
+
+        class FillType:
+            FOREGROUND, BACKGROUND, TRANSPARENT, PATTERN = range(4)
+
         class Selection:
             @staticmethod
             def none(image):
                 CALLS.append(("select", "none"))
+
+            @staticmethod
+            def all(image):
+                CALLS.append(("select", "all"))
+
+        class Drawable:
+            @staticmethod
+            def edit_fill(drawable, fill_type):
+                CALLS.append(("edit_fill", fill_type))
+                return DIRECT_OK["value"]
+
+        @staticmethod
+        def pencil(drawable, coords):
+            CALLS.append(("pencil", coords))
+            return DIRECT_OK["value"]
+
+        @staticmethod
+        def context_set_foreground(color):
+            pass
+
+        @staticmethod
+        def context_set_brush_size(size):
+            pass
 
         @staticmethod
         def context_set_stroke_method(method):
@@ -177,6 +227,7 @@ def install_gi_stub():
         @staticmethod
         def file_overwrite(run_mode, image, gio_file):
             CALLS.append(("file_overwrite", gio_file))
+            return DIRECT_OK["value"]
 
     Gimp.PDBStatusType.SUCCESS = SUCCESS
     Gimp.PDBStatusType.EXECUTION_ERROR = EXECUTION_ERROR
@@ -342,6 +393,44 @@ def main():
     r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
     check("save_xcf reports an error when gimp-xcf-save fails",
           None if r["status"] == "error" and "Permission denied" in r["error"] else f"got {r}")
+
+    scenario({})
+    DIRECT_OK["value"] = False
+    FakePDB.last_error = "Error saving 'x.xcf': Permission denied"
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf reports an error when Gimp.file_overwrite returns False",
+          None if r["status"] == "error" and "Permission denied" in r["error"] else f"got {r}")
+
+    # Direct libgimp calls that return False must not report success (#115).
+    FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
+    for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
+                            ("_fill_ellipse", {"width": 10, "height": 10}),
+                            ("_fill_layer", {})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports an error and clears its selection when the fill fails",
+              None if r["status"] == "error" and "contents are locked" in r["error"]
+              and CALLS[-1] == ("select", "none") else f"got {r}, calls {CALLS}")
+
+    for handler, params in (("_fill_selection", {}),
+                            ("_draw_line", {"x2": 10, "y2": 10}),
+                            ("_crop_to_rect", {"width": 10, "height": 10}),
+                            ("_scale_image", {"width": 10, "height": 10}),
+                            ("_flip_image", {})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports an error when its libgimp call returns False",
+              None if r["status"] == "error" and "contents are locked" in r["error"]
+              else f"got {r}, calls {CALLS}")
+    FakePDB.last_error = None
+
+    DIRECT_OK["value"] = True
+    for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
+                            ("_crop_to_rect", {"width": 10, "height": 10})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports success when its libgimp call returns True",
+              None if r["status"] == "success" else f"got {r}")
 
     print(f"\n{'FAILED' if failures else 'PASSED'}: {len(failures)} failure(s)")
     return 1 if failures else 0
