@@ -17,6 +17,7 @@ Exits 0 on pass, 1 on fail.
 import importlib.util
 import os
 import sys
+import tempfile
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +41,17 @@ CALLS = []  # (what, detail) records of side effects, cleared per scenario
 # What direct libgimp calls (edit_fill, image.crop, file_overwrite, ...) return.
 # libgimp returns False instead of raising when GIMP rejects the call (#115).
 DIRECT_OK = {"value": True}
+# What image.flatten() / merge_visible_layers() return: a layer, or None when
+# GIMP rejects the call.
+ITEM_RESULT = {"value": "merged-layer"}
+
+
+class FakeLayer:
+    def get_name(self):
+        return "merged"
+
+    def get_id(self):
+        return 7
 
 
 class FakeValueArray:
@@ -112,6 +124,30 @@ class FakeImage:
     def flip(self, *a):
         return self._direct("flip")
 
+    def flatten(self):
+        CALLS.append(("image", "flatten"))
+        return ITEM_RESULT["value"]
+
+    def merge_visible_layers(self, merge_type):
+        CALLS.append(("image", "merge"))
+        return FakeLayer() if ITEM_RESULT["value"] is not None else None
+
+    def duplicate(self):
+        CALLS.append(("image", "duplicate"))
+        return FakeImage()
+
+    def delete(self):
+        CALLS.append(("image", "delete"))
+
+    def get_width(self):
+        return 100
+
+    def get_height(self):
+        return 100
+
+    def get_id(self):
+        return 1
+
     def select_rectangle(self, *a):
         CALLS.append(("select", "rectangle"))
 
@@ -164,6 +200,9 @@ def install_gi_stub():
 
         class OrientationType:
             HORIZONTAL, VERTICAL = range(2)
+
+        class MergeType:
+            CLIP_TO_IMAGE = 1
 
         class FillType:
             FOREGROUND, BACKGROUND, TRANSPARENT, PATTERN = range(4)
@@ -273,6 +312,8 @@ def raises(fn, *needles):
     except RuntimeError as e:
         missing = [n for n in needles if n not in str(e)]
         return f"error {str(e)!r} lacks {missing}" if missing else None
+    except Exception as e:
+        return f"raised {type(e).__name__}: {e}"
     return "did not raise"
 
 
@@ -431,6 +472,48 @@ def main():
         r = getattr(plugin, handler)(params)
         check(f"{handler[1:]} reports success when its libgimp call returns True",
               None if r["status"] == "success" else f"got {r}")
+
+    # Calls that return an item give None when GIMP rejects them (#115).
+    FakePDB.last_error = "Item 'Layer' (3) cannot be modified because its contents are locked"
+    ITEM_RESULT["value"] = None
+    scenario({})
+    r = plugin._flatten_image({})
+    check("flatten_image reports an error when flatten() returns None",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+
+    scenario({})
+    r = plugin._merge_visible_layers({})
+    check("merge_visible_layers reports an error when merge returns None",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+
+    scenario({})
+    problem = raises(lambda: plugin._export_to_path(FakeImage(), os.path.join(tempfile.mkdtemp(), "x.png"),
+                                                   "png", 95, True),
+                     "Flattening", "contents are locked")
+    check("_export_to_path raises and deletes its copy when flattening it fails",
+          problem or (None if CALLS[-1] == ("image", "delete") else f"calls {CALLS}"))
+    ITEM_RESULT["value"] = "merged-layer"
+
+    scenario({})
+    r = plugin._merge_visible_layers({})
+    check("merge_visible_layers reports success when merge returns a layer",
+          None if r["status"] == "success" and r["results"]["layer_id"] == 7 else f"got {r}")
+
+    # Temporary copies must still be deleted when a call on them fails.
+    DIRECT_OK["value"] = False
+    scenario({})
+    r = plugin._export_social_media_kit({"output_dir": tempfile.mkdtemp(),
+                                         "platforms": ["instagram_square"]})
+    check("export_social_media_kit reports an error and deletes its copy when scaling fails",
+          None if r["status"] == "error" and "Scaling the export copy" in r["error"]
+          and CALLS[-1] == ("image", "delete") else f"got {r}, calls {CALLS}")
+
+    scenario({})
+    r = plugin._batch_resize({"scale_factor": 0.5})
+    check("batch_resize reports an error when scaling an open image fails",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+    DIRECT_OK["value"] = True
+    FakePDB.last_error = None
 
     print(f"\n{'FAILED' if failures else 'PASSED'}: {len(failures)} failure(s)")
     return 1 if failures else 0

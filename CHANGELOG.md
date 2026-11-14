@@ -14,6 +14,11 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- `flatten_image`, `merge_visible_layers`, `batch_resize`, `new_canvas` and the export tools
+  (`export_icon_sizes`, `export_web_optimized`, `export_social_media_kit`,
+  `export_sprite_sheet`, and flattened exports) no longer report success when GIMP rejects a
+  step. The export tools also delete their temporary copies when a step fails, and
+  `new_canvas` deletes the half-made image.
 - Fill, line, crop, scale, rotate, flip and canvas-resize tools, and saving an XCF when GIMP's
   save procedure is unavailable, no longer report success when GIMP rejects the edit (for
   example on a locked layer). They now return an error with GIMP's reason. Fill tools also
