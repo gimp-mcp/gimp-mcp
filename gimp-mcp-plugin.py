@@ -1102,8 +1102,12 @@ class MCPPlugin(Gimp.PlugIn):
                         from gi.repository import Gio
                         file_obj = Gio.File.new_for_path(temp_path)
                         
-                        # Try alternative approach using Gimp.file_save with correct number of arguments
-                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, final_image, file_obj)
+                        # Gimp.file_save(run_mode, image, file, options) returns False
+                        # instead of raising when the save fails.
+                        self._check_ok(
+                            Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, final_image, file_obj, None),
+                            "Gimp.file_save",
+                        )
                         print("Fallback export successful")
                     except Exception as fallback_error:
                         print(f"Fallback export error: {fallback_error}")
