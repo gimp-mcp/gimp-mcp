@@ -110,7 +110,12 @@ class FakeDrawable:
         return self.curves_result
 
 
+TEMP_IMAGES = []  # images the plug-in creates (new or duplicate), to check cleanup
+
+
 class FakeImage:
+    deleted = False
+
     def _direct(self, what):
         CALLS.append(("image", what))
         return DIRECT_OK["value"]
@@ -134,10 +139,19 @@ class FakeImage:
 
     def duplicate(self):
         CALLS.append(("image", "duplicate"))
-        return FakeImage()
+        dup = FakeImage()
+        TEMP_IMAGES.append(dup)
+        return dup
 
     def delete(self):
         CALLS.append(("image", "delete"))
+        self.deleted = True
+
+    def get_base_type(self):
+        return 0
+
+    def insert_layer(self, *a):
+        pass
 
     def get_width(self):
         return 100
@@ -165,6 +179,9 @@ class FakeImage:
 
     def get_layers(self):
         return ["layer"]
+
+
+OPEN_IMAGE = FakeImage()  # the image the user has open
 
 
 def install_gi_stub():
@@ -257,7 +274,34 @@ def install_gi_stub():
 
         @staticmethod
         def get_images():
-            return [FakeImage()]
+            return [OPEN_IMAGE]
+
+        class Image:
+            @staticmethod
+            def new(width, height, base_type):
+                img = FakeImage()
+                TEMP_IMAGES.append(img)
+                return img
+
+        class Layer:
+            @staticmethod
+            def new(*a):
+                return "region-layer"
+
+        class LayerMode:
+            NORMAL = 28
+
+        @staticmethod
+        def edit_copy(drawables):
+            pass
+
+        @staticmethod
+        def edit_paste(drawable, paste_into):
+            return ["floating"]
+
+        @staticmethod
+        def floating_sel_anchor(floating):
+            pass
 
         @staticmethod
         def displays_flush():
@@ -512,6 +556,18 @@ def main():
     r = plugin._batch_resize({"scale_factor": 0.5})
     check("batch_resize reports an error when scaling an open image fails",
           None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+    # The bitmap preview of a region makes two temporary images; a failed
+    # scale must delete both, and never the open image.
+    scenario({})
+    TEMP_IMAGES.clear()
+    r = plugin._get_current_image_bitmap({"region": {"origin_x": 0, "origin_y": 0, "width": 50,
+                                                     "height": 50, "max_width": 10, "max_height": 10}})
+    check("bitmap preview deletes both temporary images, not the open one, when scaling fails",
+          None if r["status"] == "error" and "Scaling the preview copy" in r["error"]
+          and len(TEMP_IMAGES) == 2 and all(i.deleted for i in TEMP_IMAGES)
+          and not OPEN_IMAGE.deleted
+          else f"got {r.get('error', r)}, temp deleted {[i.deleted for i in TEMP_IMAGES]}, "
+               f"open deleted {OPEN_IMAGE.deleted}")
     DIRECT_OK["value"] = True
     FakePDB.last_error = None
 

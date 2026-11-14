@@ -1034,10 +1034,17 @@ class MCPPlugin(Gimp.PlugIn):
                         self._check_ok(final_image.scale(target_width, target_height),
                                        "Scaling the preview copy")
                     except (RuntimeError) as scale_error:
-                        # Clean up and return error for scaling failures
+                        # Clean up and return error for scaling failures. Raising
+                        # here skips the export's finally, so delete the extracted
+                        # region (working_image) too, never the open image.
                         if should_delete_final:
                             try:
                                 final_image.delete()
+                            except (AttributeError, RuntimeError):
+                                pass
+                        if should_delete_working and working_image is not original_image:
+                            try:
+                                working_image.delete()
                             except (AttributeError, RuntimeError):
                                 pass
                         raise RuntimeError(f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}")
