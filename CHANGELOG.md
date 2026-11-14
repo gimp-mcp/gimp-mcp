@@ -14,6 +14,10 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- Fill, line, crop, scale, rotate, flip and canvas-resize tools, and saving an XCF when GIMP's
+  save procedure is unavailable, no longer report success when GIMP rejects the edit (for
+  example on a locked layer). They now return an error with GIMP's reason. Fill tools also
+  clear their temporary selection when the fill fails.
 - `auto_levels` returns an error when GIMP lacks `gimp-drawable-levels-stretch`, instead of
   falling back to a levels call that could never change the image and reporting success.
 - Tools that call GIMP procedures no longer report success when GIMP rejects the call

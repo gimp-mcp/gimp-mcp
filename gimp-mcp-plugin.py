@@ -2055,7 +2055,8 @@ class MCPPlugin(Gimp.PlugIn):
                 # Fallback: try generic file-png-export
                 proc = pdb.lookup_procedure("file-png-export")
             if proc is None:
-                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
+                self._check_ok(Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file),
+                               "Saving the image")
             else:
                 cfg = proc.create_config()
                 cfg.set_property("image", image)
@@ -2179,7 +2180,8 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg.set_property("file", gio_file)
                 self._run_pdb(proc, cfg)
             else:
-                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
+                self._check_ok(Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file),
+                               "Saving the image")
             return {"status": "success", "results": {"status": "success", "file_path": file_path}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -2606,7 +2608,7 @@ class MCPPlugin(Gimp.PlugIn):
             self._interp_from_string(interpolation)
             image.undo_group_start()
             try:
-                image.scale(width, height)
+                self._check_ok(image.scale(width, height), "Scaling the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2635,7 +2637,7 @@ class MCPPlugin(Gimp.PlugIn):
                 new_w = max(1, int(max_height * aspect))
             image.undo_group_start()
             try:
-                image.scale(new_w, new_h)
+                self._check_ok(image.scale(new_w, new_h), "Scaling the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2659,7 +2661,7 @@ class MCPPlugin(Gimp.PlugIn):
                 else:
                     _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
                     if non_empty:
-                        image.crop(x2 - x1, y2 - y1, x1, y1)
+                        self._check_ok(image.crop(x2 - x1, y2 - y1, x1, y1), "Cropping the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2678,7 +2680,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = self._get_image(image_index)
             image.undo_group_start()
             try:
-                image.crop(width, height, x, y)
+                self._check_ok(image.crop(width, height, x, y), "Cropping the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2701,7 +2703,7 @@ class MCPPlugin(Gimp.PlugIn):
                     -90.0: Gimp.RotationType.DEGREES270,
                 }
                 if angle in rot_map:
-                    image.rotate(rot_map[angle])
+                    self._check_ok(image.rotate(rot_map[angle]), "Rotating the image")
                 else:
                     import math
                     rad = math.radians(angle)
@@ -2731,7 +2733,7 @@ class MCPPlugin(Gimp.PlugIn):
             orient = Gimp.OrientationType.HORIZONTAL if direction == "horizontal" else Gimp.OrientationType.VERTICAL
             image.undo_group_start()
             try:
-                image.flip(orient)
+                self._check_ok(image.flip(orient), "Flipping the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2768,7 +2770,7 @@ class MCPPlugin(Gimp.PlugIn):
             off_x, off_y = anchor_offsets.get(anchor, (dx, dy))
             image.undo_group_start()
             try:
-                image.resize(new_w, new_h, off_x, off_y)
+                self._check_ok(image.resize(new_w, new_h, off_x, off_y), "Resizing the canvas")
                 if fill.lower() != "transparent":
                     Gimp.context_push()
                     try:
@@ -2974,11 +2976,13 @@ class MCPPlugin(Gimp.PlugIn):
                 try:
                     if fill.lower() == "transparent":
                         layer.add_alpha()
-                        Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
+                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT),
+                                       "Filling the new layer")
                     else:
                         bg = Gegl.Color.new(fill)
                         Gimp.context_set_background(bg)
-                        Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
+                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND),
+                                       "Filling the new layer")
                 finally:
                     Gimp.context_pop()
             finally:
@@ -3177,9 +3181,12 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.Selection.all(image)
                 fg = Gegl.Color.new(color_str)
                 Gimp.context_set_foreground(fg)
-                Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
-                Gimp.Selection.none(image)
+                self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
+                               "Filling the layer")
             finally:
+                # Clear the temporary selection even if the fill failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3204,16 +3211,19 @@ class MCPPlugin(Gimp.PlugIn):
                     # Ensure layer has alpha channel before deleting pixels
                     if not drawable.has_alpha():
                         drawable.add_alpha()
-                    Gimp.Drawable.edit_clear(drawable)
+                    self._check_ok(Gimp.Drawable.edit_clear(drawable), "Clearing the selection")
                 elif fill_type == "background":
-                    Gimp.Drawable.edit_fill(drawable, Gimp.FillType.BACKGROUND)
+                    self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.BACKGROUND),
+                                   "Filling the selection")
                 elif fill_type == "pattern":
-                    Gimp.Drawable.edit_fill(drawable, Gimp.FillType.PATTERN)
+                    self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.PATTERN),
+                                   "Filling the selection")
                 else:
                     # foreground (default) or explicit color
                     fg = Gegl.Color.new(color_str if fill_type not in ("foreground",) else color_str)
                     Gimp.context_set_foreground(fg)
-                    Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
+                    self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
+                                   "Filling the selection")
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
@@ -3259,9 +3269,9 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_brush_size(line_width)
                 coords = [x1, y1, x2, y2]
                 if tool == "paintbrush":
-                    Gimp.paintbrush_default(drawable, coords)
+                    self._check_ok(Gimp.paintbrush_default(drawable, coords), "Drawing the line")
                 else:
-                    Gimp.pencil(drawable, coords)
+                    self._check_ok(Gimp.pencil(drawable, coords), "Drawing the line")
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
@@ -3362,9 +3372,12 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
-                Gimp.Selection.none(image)
+                self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
+                               "Filling the region")
             finally:
+                # Clear the temporary selection even if the fill failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3390,9 +3403,12 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
-                Gimp.Selection.none(image)
+                self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
+                               "Filling the region")
             finally:
+                # Clear the temporary selection even if the fill failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3805,8 +3821,11 @@ class MCPPlugin(Gimp.PlugIn):
                 # 2. Fill shadow layer with shadow color, preserving alpha shape
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
                 shadow_layer.set_lock_alpha(True)
-                Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND)
-                shadow_layer.set_lock_alpha(False)
+                try:
+                    self._check_ok(Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND),
+                                   "Filling the shadow layer")
+                finally:
+                    shadow_layer.set_lock_alpha(False)
 
                 # 3. Set opacity and offset
                 shadow_layer.set_opacity(opacity)
