@@ -2264,25 +2264,12 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-levels-stretch")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    self._run_pdb(proc, cfg)
-                else:
-                    proc2 = pdb.lookup_procedure("gimp-drawable-levels")
-                    if proc2:
-                        cfg2 = proc2.create_config()
-                        cfg2.set_property("drawable", drawable)
-                        cfg2.set_property("channel", Gimp.HistogramChannel.VALUE)
-                        cfg2.set_property("low-input", 0.0)
-                        cfg2.set_property("high-input", 1.0)
-                        cfg2.set_property("clamp-input", True)
-                        cfg2.set_property("gamma", 1.0)
-                        cfg2.set_property("low-output", 0.0)
-                        cfg2.set_property("high-output", 1.0)
-                        self._run_pdb(proc2, cfg2)
+                # No fallback: levels with fixed parameters can't auto-stretch,
+                # so a missing procedure must be an error, not a no-op (#113).
+                proc = self._lookup_pdb("gimp-drawable-levels-stretch")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()

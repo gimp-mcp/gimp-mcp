@@ -14,6 +14,8 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- `auto_levels` returns an error when GIMP lacks `gimp-drawable-levels-stretch`, instead of
+  falling back to a levels call that could never change the image and reporting success.
 - Tools that call GIMP procedures no longer report success when GIMP rejects the call
   (for example on a locked layer) or doesn't have the procedure. They now return an
   error, with GIMP's reason when it gives one. This affects most adjustment, filter,

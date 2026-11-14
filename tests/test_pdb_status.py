@@ -279,6 +279,20 @@ def main():
     check("desaturate reports an error when the procedure is missing",
           None if r["status"] == "error" and "not found" in r["error"] else f"got {r}")
 
+    # auto_levels has no fallback: an identity gimp-drawable-levels call would
+    # report success without changing the image (#113).
+    scenario({"gimp-drawable-levels": (SUCCESS, None)})
+    r = plugin._auto_levels({})
+    check("auto_levels reports an error when levels-stretch is missing",
+          None if r["status"] == "error" and "gimp-drawable-levels-stretch" in r["error"]
+          and not CALLS else f"got {r}, calls {CALLS}")
+
+    scenario({"gimp-drawable-levels-stretch": (SUCCESS, None)})
+    r = plugin._auto_levels({})
+    check("auto_levels runs levels-stretch when GIMP has it",
+          None if r["status"] == "success" and ("run", "gimp-drawable-levels-stretch") in CALLS
+          else f"got {r}, calls {CALLS}")
+
     # Handlers with an alternative for a missing procedure must still use it.
     # Direct libgimp methods return False instead of raising (curves_spline).
     real_resolve = plugin._resolve_layer
