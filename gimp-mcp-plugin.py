@@ -1031,12 +1031,20 @@ class MCPPlugin(Gimp.PlugIn):
                         print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
                     
                     try:
-                        final_image.scale(target_width, target_height)
+                        self._check_ok(final_image.scale(target_width, target_height),
+                                       "Scaling the preview copy")
                     except (RuntimeError) as scale_error:
-                        # Clean up and return error for scaling failures
+                        # Clean up and return error for scaling failures. Raising
+                        # here skips the export's finally, so delete the extracted
+                        # region (working_image) too, never the open image.
                         if should_delete_final:
                             try:
                                 final_image.delete()
+                            except (AttributeError, RuntimeError):
+                                pass
+                        if should_delete_working and working_image is not original_image:
+                            try:
+                                working_image.delete()
                             except (AttributeError, RuntimeError):
                                 pass
                         raise RuntimeError(f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}")
@@ -1874,17 +1882,22 @@ class MCPPlugin(Gimp.PlugIn):
 
             # Drawable.fill ignores the context's opacity and paint mode, which
             # an earlier call may have changed; edit_fill would blend with them.
-            if fill.lower() == "transparent":
-                layer.add_alpha()
-                layer.fill(Gimp.FillType.TRANSPARENT)
-            else:
-                bg_color = Gegl.Color.new(fill)
-                Gimp.context_push()
-                try:
-                    Gimp.context_set_background(bg_color)
-                    layer.fill(Gimp.FillType.BACKGROUND)
-                finally:
-                    Gimp.context_pop()
+            try:
+                if fill.lower() == "transparent":
+                    layer.add_alpha()
+                    self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new canvas")
+                else:
+                    bg_color = Gegl.Color.new(fill)
+                    Gimp.context_push()
+                    try:
+                        Gimp.context_set_background(bg_color)
+                        self._check_ok(layer.fill(Gimp.FillType.BACKGROUND), "Filling the new canvas")
+                    finally:
+                        Gimp.context_pop()
+            except Exception:
+                # Don't leave a half-made image behind with no display.
+                image.delete()
+                raise
 
             display_opened = self._create_display(image)
 
@@ -1991,6 +2004,17 @@ class MCPPlugin(Gimp.PlugIn):
                 pass
             raise RuntimeError(f"{what} failed" + (f": {msg}" if msg else ""))
 
+    def _check_item(self, item, what):
+        """Return item, raise if a libgimp call that returns an item gave None.
+
+        image.flatten() and image.merge_visible_layers() return the resulting
+        layer rather than a success flag; when GIMP rejects the call they
+        return None, which _check_ok() would let through.
+        """
+        if item is None:
+            self._check_ok(False, what)
+        return item
+
     def _resolve_layer(self, image, layer_name, layer_index):
         """Resolve a layer by name, index, or fall back to the active layer."""
         if layer_name is not None:
@@ -2032,13 +2056,12 @@ class MCPPlugin(Gimp.PlugIn):
     def _export_to_path(self, image, file_path, fmt, quality, flatten):
         """Export image to file_path in the given format. Returns file size in bytes."""
         from gi.repository import Gio
-        if flatten:
-            image = image.duplicate()
-            image.flatten()
-            should_delete = True
-        else:
-            should_delete = False
+        should_delete = False
         try:
+            if flatten:
+                image = image.duplicate()
+                should_delete = True
+                self._check_item(image.flatten(), "Flattening the export copy")
             gio_file = Gio.File.new_for_path(file_path)
             pdb = Gimp.get_pdb()
             fmt_lower = fmt.lower()
@@ -2716,7 +2739,7 @@ class MCPPlugin(Gimp.PlugIn):
                         cfg.set_property("center-x",  0)
                         cfg.set_property("center-y",  0)
                         self._run_pdb(proc, cfg)
-                    image.flatten()
+                    self._check_item(image.flatten(), "Flattening the rotated image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2776,7 +2799,7 @@ class MCPPlugin(Gimp.PlugIn):
                     try:
                         bg = Gegl.Color.new(fill)
                         Gimp.context_set_background(bg)
-                        image.flatten()
+                        self._check_item(image.flatten(), "Flattening the resized canvas")
                     finally:
                         Gimp.context_pop()
             finally:
@@ -3114,7 +3137,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = self._get_image(int(params.get("image_index", 0)))
             image.undo_group_start()
             try:
-                image.flatten()
+                self._check_item(image.flatten(), "Flattening the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3128,7 +3151,8 @@ class MCPPlugin(Gimp.PlugIn):
             image = self._get_image(int(params.get("image_index", 0)))
             image.undo_group_start()
             try:
-                merged = image.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+                merged = self._check_item(image.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE),
+                                          "Merging the visible layers")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -4019,7 +4043,7 @@ class MCPPlugin(Gimp.PlugIn):
                     else:
                         new_h = px
                         new_w = max(1, int(px * aspect))
-                    dup.scale(new_w, new_h)
+                    self._check_ok(dup.scale(new_w, new_h), "Scaling the icon copy")
                     self._export_to_path(dup, out_path, fmt, 95, True)
                     exported.append({"size": px, "file_path": out_path})
                 finally:
@@ -4052,7 +4076,7 @@ class MCPPlugin(Gimp.PlugIn):
                         new_w, new_h = mw, max(1, int(mw / aspect))
                     else:
                         new_h, new_w = mh, max(1, int(mh * aspect))
-                    dup.scale(new_w, new_h)
+                    self._check_ok(dup.scale(new_w, new_h), "Scaling the export copy")
 
                 gio_file = dup.get_file()
                 raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else "image"
@@ -4110,7 +4134,7 @@ class MCPPlugin(Gimp.PlugIn):
                                 new_h = max(1, int(tw / aspect))
                     else:
                         new_w, new_h = tw, th
-                img.scale(new_w, new_h)
+                self._check_ok(img.scale(new_w, new_h), f"Scaling image {img.get_id()}")
                 results.append({"image_id": img.get_id(), "old_width": src_w, "old_height": src_h, "new_width": new_w, "new_height": new_h})
             Gimp.displays_flush()
             return {"status": "success", "results": {"results": results, "count": len(results)}}
@@ -4148,32 +4172,35 @@ class MCPPlugin(Gimp.PlugIn):
             sheet_h = rows * frame_h + (rows - 1) * padding
 
             sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGBA)
-            bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
-            sheet.insert_layer(bg_layer, None, 0)
-            Gimp.context_set_background(Gegl.Color.new("transparent"))
-            Gimp.Drawable.edit_fill(bg_layer, Gimp.FillType.TRANSPARENT)
+            try:
+                bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
+                sheet.insert_layer(bg_layer, None, 0)
+                Gimp.context_set_background(Gegl.Color.new("transparent"))
+                self._check_ok(Gimp.Drawable.edit_fill(bg_layer, Gimp.FillType.TRANSPARENT),
+                               "Clearing the sprite sheet")
 
-            for i, frame in enumerate(frames):
-                col = i % cols
-                row = i // cols
-                dest_x = col * (frame_w + padding)
-                dest_y = row * (frame_h + padding)
-                if source == "images":
-                    src_layers = frame.get_layers()
-                    if not src_layers:
-                        continue
-                    src_drawable = src_layers[0]
-                    frame.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame.get_width(), frame.get_height())
-                else:
-                    src_drawable = frame
-                    frame.get_image().select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame_w, frame_h)
-                Gimp.edit_copy([src_drawable])
-                pasted = Gimp.edit_paste(bg_layer, True)[0]
-                pasted.set_offsets(dest_x, dest_y)
-                Gimp.floating_sel_anchor(pasted)
+                for i, frame in enumerate(frames):
+                    col = i % cols
+                    row = i // cols
+                    dest_x = col * (frame_w + padding)
+                    dest_y = row * (frame_h + padding)
+                    if source == "images":
+                        src_layers = frame.get_layers()
+                        if not src_layers:
+                            continue
+                        src_drawable = src_layers[0]
+                        frame.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame.get_width(), frame.get_height())
+                    else:
+                        src_drawable = frame
+                        frame.get_image().select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame_w, frame_h)
+                    Gimp.edit_copy([src_drawable])
+                    pasted = Gimp.edit_paste(bg_layer, True)[0]
+                    pasted.set_offsets(dest_x, dest_y)
+                    Gimp.floating_sel_anchor(pasted)
 
-            self._export_to_path(sheet, output_path, "png", 95, True)
-            sheet.delete()
+                self._export_to_path(sheet, output_path, "png", 95, True)
+            finally:
+                sheet.delete()
             return {
                 "status": "success",
                 "results": {
@@ -4220,11 +4247,11 @@ class MCPPlugin(Gimp.PlugIn):
                     scale = max(target_w / src_w, target_h / src_h)
                     scaled_w = max(1, int(src_w * scale))
                     scaled_h = max(1, int(src_h * scale))
-                    dup.scale(scaled_w, scaled_h)
+                    self._check_ok(dup.scale(scaled_w, scaled_h), "Scaling the export copy")
                     # Crop to exact target
                     crop_x = (scaled_w - target_w) // 2
                     crop_y = (scaled_h - target_h) // 2
-                    dup.crop(target_w, target_h, crop_x, crop_y)
+                    self._check_ok(dup.crop(target_w, target_h, crop_x, crop_y), "Cropping the export copy")
                     out_path = os.path.join(output_dir, f"{platform_name}.png")
                     self._export_to_path(dup, out_path, "png", 95, True)
                     exported.append({"platform": platform_name, "file_path": out_path, "width": target_w, "height": target_h})
