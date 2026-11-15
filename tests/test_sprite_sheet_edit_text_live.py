@@ -342,6 +342,9 @@ def check_sprite_sheet_frame_effects(tmpdir):
         f"_t64_fx = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
         "Gimp.context_set_opacity(100.0)",
         "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        # fill_rect() selects rectangles; a feathered selection would soften
+        # the edges the pixel checks below rely on.
+        "Gimp.context_set_feather(False)",
         "_t64_mgroup = Gimp.GroupLayer.new(_t64_fx, 'mask group')",
         "_t64_fx.insert_layer(_t64_mgroup, None, 0)",
         f"_t64_mchild = Gimp.Layer.new(_t64_fx, 'mask child', {FRAME_W}, {FRAME_H}, "
