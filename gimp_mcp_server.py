@@ -22,6 +22,7 @@ import traceback
 import time
 from pathlib import Path
 from importlib import resources
+from typing import Literal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -750,6 +751,62 @@ def open_image(ctx: Context, file_path: str) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"open_image failed: {e}")
+
+
+@gimp_tool()
+def open_image_as_layer(
+    ctx: Context,
+    file_path: str,
+    image_index: int = 0,
+    layer_name: str | None = None,
+    position: int = 0,
+    scale: Literal["none", "fit", "canvas"] = "none",
+    offset_x: int | None = None,
+    offset_y: int | None = None,
+) -> dict:
+    """Import an image file as a new layer in an open image (like File > Open as Layers).
+
+    Use this to bring another image (texture, reference, cutout, background) into
+    the image being edited. No new image window is opened. The file's visible
+    content becomes one new layer: a multi-layer file (XCF, PSD, ORA) is merged
+    into one layer, and transparency is kept.
+
+    Parameters:
+    - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.)
+    - image_index: Index of the image to add the layer to (default 0)
+    - layer_name: Name for the new layer (default: the file name without extension).
+      GIMP adds a suffix such as " #1" if the name is taken; the result has the real name.
+    - position: Stack position, 0 = top (default); larger values go further down.
+      A value past the bottom puts the layer at the bottom.
+    - scale: "none" = the file's own size (default); "fit" = scale up or down to fit
+      inside the canvas, keeping the aspect ratio; "canvas" = stretch to the canvas size
+    - offset_x, offset_y: Position of the layer's top-left corner on the canvas.
+      Each one left out is centered on the canvas.
+
+    Returns:
+    - layer_name, layer_id: the new layer
+    - width, height: layer size after scaling
+    - offset_x, offset_y: where the layer was placed
+    - position: the layer's actual stack position (0 = top)
+    - source_width, source_height: the file's own dimensions
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("open_image_as_layer", {
+            "file_path": file_path,
+            "image_index": image_index,
+            "layer_name": layer_name,
+            "position": position,
+            "scale": scale,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+        })
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"open_image_as_layer failed: {e}")
 
 
 @gimp_tool()
