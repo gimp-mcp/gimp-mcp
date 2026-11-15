@@ -944,7 +944,7 @@ class MCPPlugin(Gimp.PlugIn):
             if not has_visible(original_image.get_layers()):
                 return {
                     "status": "error",
-                    "error": "No visible layers in the image (all layers are hidden or fully transparent, or the image has no layers)"
+                    "error": "No visible layers in the image (all layers are hidden or at 0% opacity, or the image has no layers)"
                 }
 
             # Validate region before creating any temporary image
@@ -1918,6 +1918,9 @@ class MCPPlugin(Gimp.PlugIn):
             "Creating the snapshot image")
         layer, inserted = None, False
         try:
+            # No undo history: it would keep the full-size render alive after
+            # the crop and scale below
+            temp.undo_disable()
             # new_from_visible renders the whole canvas, and the rectangle is cut
             # out afterwards, so a small region of a large image still costs a
             # full-size composite (8000x8000 RGBA is about 256 MB at 8 bits)

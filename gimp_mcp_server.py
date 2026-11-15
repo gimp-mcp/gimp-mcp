@@ -546,7 +546,9 @@ def get_state_snapshot(
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - PNG image of the current GIMP canvas state (with alpha if present)
+    - RGBA PNG of the visible composite (hidden and 0%-opacity layers are left out,
+      blend modes and layer filters apply); an image with nothing visible returns an
+      error. The user's selection and clipboard are not changed.
 
     Typical agent workflow:
         1. open_image / new_canvas

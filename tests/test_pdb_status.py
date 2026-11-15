@@ -194,6 +194,10 @@ class FakeImage:
     def select_ellipse(self, *a):
         CALLS.append(("select", "ellipse"))
 
+    def undo_disable(self):
+        CALLS.append(("image", "undo_disable"))
+        return True
+
     def undo_group_start(self):
         pass
 
@@ -716,15 +720,33 @@ def main():
               else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
     del OPEN_IMAGE.get_layers
 
-    # _render_visible renders the source image into the temporary one and
-    # moves the composite so the region's corner lands at (0, 0).
+    # image_index picks which open image is rendered, full or region.
+    second = FakeImage()
+    get_images = mod.Gimp.get_images
+    mod.Gimp.get_images = staticmethod(lambda: [OPEN_IMAGE, second])
+    try:
+        for params in ({"image_index": 1},
+                       {"image_index": 1, "region": {"origin_x": 0, "origin_y": 0,
+                                                     "width": 10, "height": 10}}):
+            scenario(png_export)
+            r = plugin._get_current_image_bitmap(params)
+            rendered = [c[2] for c in CALLS if c[:2] == ("layer", "new_from_visible")]
+            check(f"bitmap preview renders the second image for {params}",
+                  None if r["status"] == "success" and rendered == [second]
+                  else f"got {r.get('error', r['status'])}, rendered {rendered}")
+    finally:
+        mod.Gimp.get_images = get_images
+
+    # _render_visible renders the source image into the temporary one, with
+    # undo off, and moves the composite so the region's corner lands at (0, 0).
     CALLS.clear()
     TEMP_IMAGES.clear()
     temp = plugin._render_visible(OPEN_IMAGE, 5, 7, 10, 10)
     temp.delete()
     check("_render_visible renders the source into its temporary image, offset by the region",
           None if ("layer", "new_from_visible", OPEN_IMAGE, temp) in CALLS
-          and ("layer", "set_offsets", (-5, -7)) in CALLS else f"calls {CALLS}")
+          and ("layer", "set_offsets", (-5, -7)) in CALLS
+          and ("image", "undo_disable") in CALLS else f"calls {CALLS}")
 
     # If the rendered layer can't be added, it isn't freed with the image, so
     # it is deleted on its own, and the image too.
