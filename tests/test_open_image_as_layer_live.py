@@ -196,23 +196,38 @@ def main():
         print("PASS: bad file, position and scale -> error, target unchanged")
 
         # Make a libgimp call fail mid-import (it returns False, as GIMP does when
-        # it rejects a call): the target must keep its layers and stay clean.
+        # it rejects a call): the target must keep its layers and stay clean, and a
+        # layer created for it must be freed. new_from_visible is wrapped to record
+        # the IDs of the layers it creates.
+        py("_aslayer_nfv = Gimp.Layer.new_from_visible",
+           "_aslayer_ids = []",
+           "def _aslayer_record(*a):\n"
+           "    _l = _aslayer_nfv(*a)\n"
+           "    if _l is not None:\n"
+           "        _aslayer_ids.append(_l.get_id())\n"
+           "    return _l")
         for cls, method in (('Gimp.Layer', 'set_offsets'), ('Gimp.Image', 'insert_layer'),
                             ('Gimp.Image', 'scale')):
             py("_aslayer_img.clean_all()",
+               "_aslayer_ids.clear()",
                f"_aslayer_orig = {cls}.{method}",
-               f"{cls}.{method} = lambda self, *a: False")
+               f"{cls}.{method} = lambda self, *a: False",
+               "Gimp.Layer.new_from_visible = _aslayer_record")
             try:
                 r = cmd('open_image_as_layer', {'file_path': SRC, 'image_index': image_index(),
                                                 'scale': 'fit'})
             finally:
-                py(f"{cls}.{method} = _aslayer_orig")
+                py(f"{cls}.{method} = _aslayer_orig",
+                   "Gimp.Layer.new_from_visible = _aslayer_nfv")
             check(r.get('status') == 'error', f"failing {method} did not fail the import", r)
             check(layer_names() == before, f"failing {method} changed the layers", layer_names())
             check(py("print(_aslayer_img.is_dirty())") == "False",
                   f"failing {method} marked the target as changed")
             check(image_count() == count, f"failing {method} left an image open", image_count())
-        print("PASS: a failure mid-import leaves the target unchanged and clean")
+            leaked = json.loads(py("print(json.dumps([i for i in _aslayer_ids "
+                                   "if Gimp.Item.id_is_valid(i)]))"))
+            check(not leaked, f"failing {method} leaked layers", leaked)
+        print("PASS: a failure mid-import leaves the target unchanged and clean, no leaked layer")
         return 0
     finally:
         try:
@@ -224,6 +239,11 @@ def main():
                 py("_aslayer_img.delete()")
             except SystemExit:
                 print("  (cleanup) could not delete the test image", file=sys.stderr)
+        try:
+            os.remove(SRC)
+            os.rmdir(SRC_DIR)
+        except OSError:
+            pass
 
 
 if __name__ == '__main__':

@@ -2221,17 +2221,22 @@ class MCPPlugin(Gimp.PlugIn):
             offset_x = params.get("offset_x")
             offset_y = params.get("offset_y")
 
+            # GIMP's own error for a missing file is cryptic ("... out of range").
+            if not os.path.isfile(file_path):
+                return {"status": "error", "error": f"File not found: {file_path}"}
             # Resolve the target before loading: Gimp.get_images() lists the
             # newest image first, so the temporary image would shift the indices.
             target = self._get_image(image_index)
             loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(file_path))
-            if loaded is None:
-                return {"status": "error", "error": f"Could not open file: {file_path}"}
+            # GIMP returns None for a missing file and for one it can't read;
+            # _check_item adds GIMP's own error message, which tells them apart.
+            self._check_item(loaded, f"Opening {file_path}")
             # Everything up to insert_layer() works on the temporary image or on a
             # layer that isn't in the target yet, so a failure leaves the target
             # untouched: no layer, no undo step, not marked dirty.
             canvas_w, canvas_h = target.get_width(), target.get_height()
             layer = None
+            inserted = False
             try:
                 try:
                     src_w, src_h = loaded.get_width(), loaded.get_height()
@@ -2252,9 +2257,11 @@ class MCPPlugin(Gimp.PlugIn):
                 y = int(offset_y) if offset_y is not None else (canvas_h - h) // 2
                 self._check_ok(layer.set_offsets(x, y), "Moving the layer")
                 self._check_ok(target.insert_layer(layer, None, position), "Inserting the layer")
+                inserted = True
             except Exception:
                 # A layer that never made it into the target must be freed here.
-                if layer is not None and layer.get_image() is None:
+                # (Its get_image() is already the target, so it can't tell us.)
+                if layer is not None and not inserted:
                     try:
                         layer.delete()
                     except Exception:
