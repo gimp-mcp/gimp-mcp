@@ -617,6 +617,8 @@ def main():
     # never goes below 1 pixel. The region's own bounds win over the top-level
     # ones, which scale a region without bounds (get_state_snapshot relies on
     # that). The temporary image has the region's size.
+    # A working PNG export, so the success-path cases below can require success.
+    png_export = {"file-png-export": (SUCCESS, None)}
     original = FakeImage.get_width, FakeImage.get_height, FakeImage.scale
     for (w, h), top_bounds, region_bounds, expected in (
             ((100, 60), None, (50, 50), (50, 30)),
@@ -635,13 +637,15 @@ def main():
         FakeImage.get_width = lambda self, w=w: 100 if self is OPEN_IMAGE else w
         FakeImage.get_height = lambda self, h=h: 100 if self is OPEN_IMAGE else h
         FakeImage.scale = lambda self, *size, scaled=scaled: scaled.append(size) or True
+        scenario(png_export)
         try:
-            plugin._get_current_image_bitmap(params)
+            r = plugin._get_current_image_bitmap(params)
         finally:
             FakeImage.get_width, FakeImage.get_height, FakeImage.scale = original
         check(f"bitmap preview scales a {w}x{h} region with bounds {top_bounds} (top level) and "
               f"{region_bounds} (region) to {expected[0]}x{expected[1]}",
-              None if scaled == [expected] else f"scaled to {scaled}")
+              None if r["status"] == "success" and scaled == [expected]
+              else f"got {r.get('error', r['status'])}, scaled to {scaled}")
 
     # The bitmap preview rejects bad arguments and images with nothing visible
     # before it creates any temporary image.
@@ -705,10 +709,11 @@ def main():
                          ("a hidden layer above a visible one", [Layer(visible=False), Layer()])):
         OPEN_IMAGE.get_layers = lambda layers=layers: layers
         TEMP_IMAGES.clear()
+        scenario(png_export)
         r = plugin._get_current_image_bitmap({})
         check(f"bitmap preview renders an image with {name}",
-              None if "No visible layers" not in r.get("error", "") and len(TEMP_IMAGES) == 1
-              else f"got {r}, temporary images {len(TEMP_IMAGES)}")
+              None if r["status"] == "success" and len(TEMP_IMAGES) == 1
+              else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
     del OPEN_IMAGE.get_layers
 
     # _render_visible renders the source image into the temporary one and
