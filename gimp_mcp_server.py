@@ -764,12 +764,15 @@ def open_image_as_layer(
     offset_x: int | None = None,
     offset_y: int | None = None,
 ) -> dict:
-    """Import an image file as a new layer in an open image (like File > Open as Layers).
+    """Import an image file as a new layer in an open image.
 
     Use this to bring another image (texture, reference, cutout, background) into
-    the image being edited. No new image window is opened. The file's visible
-    content becomes one new layer: a multi-layer file (XCF, PSD, ORA) is merged
-    into one layer, and transparency is kept.
+    the image being edited. No new image window is opened. Unlike GIMP's
+    File > Open as Layers, which keeps a file's layers separate, the file's visible
+    content always becomes one new layer: a multi-layer file (XCF, PSD, ORA) is
+    merged, and transparency is kept. The layer is converted to the image's color
+    mode; in an indexed image its colors are reduced to that image's palette, so
+    convert the image to RGB first to keep them.
 
     Parameters:
     - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.)

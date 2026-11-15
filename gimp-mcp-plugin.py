@@ -2195,7 +2195,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _open_image_as_layer(self, params):
-        """Import an image file as one new layer in an open image (File > Open as Layers).
+        """Import an image file as one new layer in an open image.
 
         The file is loaded into a temporary image with no display, and
         Gimp.Layer.new_from_visible() turns its visible composite into a layer
@@ -2227,39 +2227,39 @@ class MCPPlugin(Gimp.PlugIn):
             loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(file_path))
             if loaded is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            try:
-                src_w, src_h = loaded.get_width(), loaded.get_height()
-                layer = self._check_item(Gimp.Layer.new_from_visible(loaded, target, layer_name),
-                                         "Creating a layer from the file")
-            finally:
-                # The temporary image never had a display, so delete() removes it.
-                loaded.delete()
-
+            # Everything up to insert_layer() works on the temporary image or on a
+            # layer that isn't in the target yet, so a failure leaves the target
+            # untouched: no layer, no undo step, not marked dirty.
             canvas_w, canvas_h = target.get_width(), target.get_height()
-            target.undo_group_start()
+            layer = None
             try:
-                self._check_ok(target.insert_layer(layer, None, position), "Inserting the layer")
                 try:
+                    src_w, src_h = loaded.get_width(), loaded.get_height()
                     if scale == "fit":
                         factor = min(canvas_w / src_w, canvas_h / src_h)
-                        self._check_ok(layer.scale(max(1, round(src_w * factor)),
-                                                   max(1, round(src_h * factor)), False),
-                                       "Scaling the layer")
+                        self._check_ok(loaded.scale(max(1, round(src_w * factor)),
+                                                    max(1, round(src_h * factor))),
+                                       "Scaling the image")
                     elif scale == "canvas":
-                        self._check_ok(layer.scale(canvas_w, canvas_h, False), "Scaling the layer")
-                    w, h = layer.get_width(), layer.get_height()
-                    x = int(offset_x) if offset_x is not None else (canvas_w - w) // 2
-                    y = int(offset_y) if offset_y is not None else (canvas_h - h) // 2
-                    self._check_ok(layer.set_offsets(x, y), "Moving the layer")
-                except Exception:
-                    # Don't leave a half-done layer behind when reporting an error.
+                        self._check_ok(loaded.scale(canvas_w, canvas_h), "Scaling the image")
+                    layer = self._check_item(Gimp.Layer.new_from_visible(loaded, target, layer_name),
+                                             "Creating a layer from the file")
+                finally:
+                    # The temporary image never had a display, so delete() removes it.
+                    loaded.delete()
+                w, h = layer.get_width(), layer.get_height()
+                x = int(offset_x) if offset_x is not None else (canvas_w - w) // 2
+                y = int(offset_y) if offset_y is not None else (canvas_h - h) // 2
+                self._check_ok(layer.set_offsets(x, y), "Moving the layer")
+                self._check_ok(target.insert_layer(layer, None, position), "Inserting the layer")
+            except Exception:
+                # A layer that never made it into the target must be freed here.
+                if layer is not None and layer.get_image() is None:
                     try:
-                        target.remove_layer(layer)
+                        layer.delete()
                     except Exception:
                         pass
-                    raise
-            finally:
-                target.undo_group_end()
+                raise
             Gimp.displays_flush()
             _, actual_x, actual_y = layer.get_offsets()
             return {

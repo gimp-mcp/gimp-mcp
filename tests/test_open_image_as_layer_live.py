@@ -7,7 +7,8 @@ with three layers. It then imports the XCF in several ways and checks the
 new layer: transparency kept (with a lime background color in the context,
 which a flatten would leak in), content kept where it sits on the source
 canvas, size and offsets for each scale mode, stack position, the reported
-values, no temporary image left open, and errors leaving the target unchanged.
+values, no temporary image left open, and errors (including a GIMP call failing
+mid-import) leaving the target unchanged and not marked dirty.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). The XCF goes under ~/tmp, because a Snap GIMP has a
@@ -193,6 +194,25 @@ def main():
             check(layer_names() == before, f"{params} changed the target", layer_names())
             check(image_count() == count, f"{params} left an image open", image_count())
         print("PASS: bad file, position and scale -> error, target unchanged")
+
+        # Make a libgimp call fail mid-import (it returns False, as GIMP does when
+        # it rejects a call): the target must keep its layers and stay clean.
+        for cls, method in (('Gimp.Layer', 'set_offsets'), ('Gimp.Image', 'insert_layer'),
+                            ('Gimp.Image', 'scale')):
+            py("_aslayer_img.clean_all()",
+               f"_aslayer_orig = {cls}.{method}",
+               f"{cls}.{method} = lambda self, *a: False")
+            try:
+                r = cmd('open_image_as_layer', {'file_path': SRC, 'image_index': image_index(),
+                                                'scale': 'fit'})
+            finally:
+                py(f"{cls}.{method} = _aslayer_orig")
+            check(r.get('status') == 'error', f"failing {method} did not fail the import", r)
+            check(layer_names() == before, f"failing {method} changed the layers", layer_names())
+            check(py("print(_aslayer_img.is_dirty())") == "False",
+                  f"failing {method} marked the target as changed")
+            check(image_count() == count, f"failing {method} left an image open", image_count())
+        print("PASS: a failure mid-import leaves the target unchanged and clean")
         return 0
     finally:
         try:

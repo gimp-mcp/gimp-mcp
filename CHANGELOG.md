@@ -14,9 +14,9 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Added
-- `open_image_as_layer` imports an image file as a new layer in an open image, like
-  File > Open as Layers. A multi-layer file is merged into one layer with its transparency
-  kept. The layer can be scaled to fit or fill the canvas, and is centered unless offsets
+- `open_image_as_layer` imports an image file as a new layer in an open image, without
+  opening it in its own window. A multi-layer file is merged into one layer with its
+  transparency kept. The layer can be scaled to fit or fill the canvas, and is centered unless offsets
   are given. Based on #61 by @kabachuha.
 
 ### Fixed
