@@ -2274,12 +2274,13 @@ def edit_text(
     Parameters:
     - layer_name: Name of the text layer to edit
     - text: New text content (omit to leave unchanged)
-    - font: New font family (omit to leave unchanged)
+    - font: New font name, as listed by list_fonts (omit to leave unchanged). An unknown
+      name falls back to a close match or a default font.
     - size: New font size in pixels (omit to leave unchanged)
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns {status}, plus {font} with the font actually applied when font was given.
     """
     try:
         conn = get_gimp_connection()
@@ -2676,13 +2677,17 @@ def export_sprite_sheet(
     source: str = "layers",
     image_index: int = 0
 ) -> dict:
-    """Combine multiple frames into a sprite sheet PNG.
+    """Combine multiple frames into a sprite sheet PNG with a transparent background.
+
+    Every cell has the size of the first frame; larger frames are cut to it.
 
     Parameters:
     - output_path: Absolute path for the output PNG file
     - columns: Number of columns in the grid (defaults to square root of frame count)
     - padding: Pixel gap between frames (default 0)
-    - source: "layers" (each layer is a frame; default) or "images" (each open image)
+    - source: "layers" (each layer is a frame, starting at the layer's top-left corner;
+      default) or "images" (each open image's top layer is a frame, at its position on
+      the canvas; newest image first)
     - image_index: Source image when source="layers" (default 0)
 
     Returns: {file_path, columns, rows, frame_width, frame_height, count}

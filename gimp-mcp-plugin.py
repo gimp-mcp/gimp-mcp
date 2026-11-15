@@ -3660,6 +3660,15 @@ class MCPPlugin(Gimp.PlugIn):
             new_color   = params.get("color", None)
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
+            # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
+            # before any edit. _resolve_font falls back to a close match or a
+            # default font, so this only fails if GIMP has no fonts at all.
+            font_obj = None
+            if new_font is not None:
+                font_obj = self._resolve_font(new_font)
+                if font_obj is None:
+                    return {"status": "error",
+                            "error": f"edit_text: no font found for {new_font!r}"}
             image.undo_group_start()
             try:
                 if new_text is not None:
@@ -3672,7 +3681,7 @@ class MCPPlugin(Gimp.PlugIn):
                     proc = self._lookup_pdb("gimp-text-layer-set-font")
                     cfg = proc.create_config()
                     cfg.set_property("layer", layer)
-                    cfg.set_property("font",  new_font)
+                    cfg.set_property("font",  font_obj)
                     self._run_pdb(proc, cfg)
                 if new_size is not None:
                     proc = self._lookup_pdb("gimp-text-layer-set-font-size")
@@ -3690,7 +3699,11 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            results = {"status": "success"}
+            if font_obj is not None:
+                # _resolve_font may pick a close match or a fallback, so report it.
+                results["font"] = font_obj.get_name()
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4152,7 +4165,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _export_sprite_sheet(self, params):
         """Combine frames into a sprite sheet."""
         try:
-            from gi.repository import Gegl
             output_path = params.get("output_path", "")
             columns     = params.get("columns", None)
             padding     = int(params.get("padding", 0))
@@ -4179,14 +4191,18 @@ class MCPPlugin(Gimp.PlugIn):
             sheet_w = cols * frame_w + (cols - 1) * padding
             sheet_h = rows * frame_h + (rows - 1) * padding
 
-            sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGBA)
+            # ImageBaseType has no RGBA; alpha comes from the RGBA_IMAGE layer below.
+            sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGB)
             try:
                 bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
-                sheet.insert_layer(bg_layer, None, 0)
-                Gimp.context_set_background(Gegl.Color.new("transparent"))
+                self._check_ok(sheet.insert_layer(bg_layer, None, 0),
+                               "Adding the sprite sheet background")
+                # TRANSPARENT fill doesn't use the context background color.
                 self._check_ok(Gimp.Drawable.edit_fill(bg_layer, Gimp.FillType.TRANSPARENT),
                                "Clearing the sprite sheet")
 
+                # Copy each frame as a layer of the sheet. Unlike copy/paste, this
+                # leaves the user's selection and clipboard alone.
                 for i, frame in enumerate(frames):
                     col = i % cols
                     row = i // cols
@@ -4197,16 +4213,31 @@ class MCPPlugin(Gimp.PlugIn):
                         if not src_layers:
                             continue
                         src_drawable = src_layers[0]
-                        frame.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame.get_width(), frame.get_height())
+                        # Keep the layer where it sits in its image.
+                        _, off_x, off_y = src_drawable.get_offsets()
                     else:
                         src_drawable = frame
-                        frame.get_image().select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, frame_w, frame_h)
-                    Gimp.edit_copy([src_drawable])
-                    pasted = Gimp.edit_paste(bg_layer, True)[0]
-                    pasted.set_offsets(dest_x, dest_y)
-                    Gimp.floating_sel_anchor(pasted)
+                        off_x, off_y = 0, 0
+                    frame_layer = self._check_item(Gimp.Layer.new_from_drawable(src_drawable, sheet),
+                                            f"Copying frame {i}")
+                    self._check_ok(sheet.insert_layer(frame_layer, None, 0), f"Adding frame {i}")
+                    # Copy pixels only, as a paste would: a hidden, faded or
+                    # blended source layer still gives a plain frame.
+                    frame_layer.set_visible(True)
+                    frame_layer.set_opacity(100.0)
+                    frame_layer.set_mode(Gimp.LayerMode.NORMAL)
+                    if not frame_layer.has_alpha():
+                        self._check_ok(frame_layer.add_alpha(), f"Adding alpha to frame {i}")
+                    # Clip to the frame cell so a larger layer can't spill into
+                    # the next cell. Call the base Layer.resize(): on a text layer,
+                    # Gimp.TextLayer.resize() takes only (width, height) and hides it.
+                    self._check_ok(Gimp.Layer.resize(frame_layer, frame_w, frame_h, off_x, off_y),
+                                   f"Clipping frame {i}")
+                    frame_layer.set_offsets(dest_x, dest_y)
 
-                self._export_to_path(sheet, output_path, "png", 95, True)
+                # flatten=False keeps the transparent background between frames;
+                # the PNG export merges the visible layers.
+                self._export_to_path(sheet, output_path, "png", 95, False)
             finally:
                 sheet.delete()
             return {

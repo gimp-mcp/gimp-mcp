@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Live regression test for issue #64, items 1 and 2.
+
+1. export_sprite_sheet used Gimp.ImageBaseType.RGBA, which GIMP 3.2 doesn't
+   have, so it always failed. It also flattened the sheet on export, which
+   filled the transparent background. The test builds a 4-frame image (one
+   frame hidden), exports a 2x2 sheet with padding, and checks the PNG's size,
+   that it has an alpha channel, that each frame is in its cell and that the
+   horizontal and vertical padding is transparent. It also checks that the
+   export leaves the context background color and the source image's
+   selection as they were. A second sheet checks that a text-layer frame
+   exports and that a frame larger than its cell is clipped to it.
+2. edit_text passed the font name as a string, but gimp-text-layer-set-font
+   takes a Gimp.Font, so changing the font always failed. The test changes a
+   text layer's font and checks the reported and the applied font.
+
+Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
+overrides the port). The sheet is written to a temporary directory; with a
+Snap GIMP, which has a private /tmp, set TMPDIR to a directory GIMP can see
+(e.g. ~/tmp). Run it directly, not with pytest. Exits 0 on pass, 1 on fail.
+"""
+import json
+import os
+import shutil
+import socket
+import struct
+import sys
+import tempfile
+
+HOST, PORT = '127.0.0.1', int(os.environ.get('GIMP_MCP_PORT', 9877))
+FRAME_W, FRAME_H, PADDING, COLUMNS = 30, 20, 4, 2
+# Frame colors as (name, RGB). Frame 2 is hidden in the source image.
+FRAMES = [('red', (1, 0, 0)), ('lime', (0, 1, 0)), ('blue', (0, 0, 1)), ('yellow', (1, 1, 0))]
+HIDDEN_FRAME = 2
+USER_SELECTION = (2, 3, 10, 8)  # x, y, w, h set on the source before exporting
+
+
+def send(msg, timeout=60):
+    """Send one JSON message to the plugin socket and return the decoded reply."""
+    with socket.create_connection((HOST, PORT), timeout=timeout) as s:
+        s.sendall(json.dumps(msg).encode() + b'\n')
+        buf = b''
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            try:
+                return json.loads(buf.decode())
+            except json.JSONDecodeError:
+                continue
+    return {'status': 'error', 'error': 'parse: ' + buf.decode()[:200]}
+
+
+def cmd(t, params=None):
+    """Send a {type, params} tool command."""
+    return send({'type': t, 'params': params or {}})
+
+
+def py(*lines):
+    """Run Python lines in the plugin's persistent context; return the printed output."""
+    r = send({'cmds': list(lines)})
+    if r.get('status') != 'success':
+        fail(f"exec failed: {r.get('error', r)}")
+    return ''.join(r.get('results') or []).strip()
+
+
+def fail(msg):
+    print(f"FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def image_index(var):
+    """Return the current index in Gimp.get_images() of the image held in `var`."""
+    out = py(f"print(next(i for i, im in enumerate(Gimp.get_images()) "
+             f"if im.get_id() == {var}.get_id()))")
+    return int(out)
+
+
+def png_header(path):
+    """Return (width, height, color_type) from a PNG file's IHDR chunk."""
+    with open(path, 'rb') as f:
+        head = f.read(26)
+    if head[:8] != b'\x89PNG\r\n\x1a\n':
+        fail(f"{path} is not a PNG file")
+    width, height = struct.unpack('>II', head[16:24])
+    return width, height, head[25]
+
+
+def sample(path, points):
+    """Load `path` in GIMP once and return the RGBA (0-1, rounded) at each (x, y)."""
+    out = py(
+        "from gi.repository import Gio",
+        f"_t64_load = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path({path!r}))",
+        # One command: the plugin runs each command separately, so a
+        # try/finally must not be split across them.
+        "try:\n"
+        "    _t64_px = _t64_load.get_layers()[0]\n"
+        f"    print([[round(v, 3) for v in _t64_px.get_pixel(x, y).get_rgba()] for x, y in {points!r}])\n"
+        "finally:\n"
+        "    _t64_load.delete()",
+    )
+    return json.loads(out)
+
+
+def context_background():
+    return py("print([round(v, 3) for v in Gimp.context_get_background().get_rgba()])")
+
+
+def selection_bounds(var):
+    return py(f"print(list(Gimp.Selection.bounds({var})))")
+
+
+def check_sprite_sheet(tmpdir):
+    lines = [
+        "from gi.repository import Gimp, Gegl",
+        f"_t64_frames = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
+        "Gimp.context_push()",
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+    ]
+    # Insert in reverse so the layer stack (top first) is frame0, frame1, ...
+    for i, (name, _) in reversed(list(enumerate(FRAMES))):
+        lines += [
+            f"_t64_l = Gimp.Layer.new(_t64_frames, 'frame{i}', {FRAME_W}, {FRAME_H}, "
+            "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+            "_t64_frames.insert_layer(_t64_l, None, 0)",
+            f"Gimp.context_set_foreground(Gegl.Color.new('{name}'))",
+            "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        ]
+        if i == HIDDEN_FRAME:
+            lines.append("_t64_l.set_visible(False)")
+    lines += [
+        "Gimp.context_pop()",
+        # A user's state the export must not touch.
+        "Gimp.context_set_background(Gegl.Color.new('rgb(1.0, 0.5, 0.0)'))",
+        "_t64_frames.select_rectangle(Gimp.ChannelOps.REPLACE, %d, %d, %d, %d)" % USER_SELECTION,
+    ]
+    py(*lines)
+    bg_before = context_background()
+    sel_before = selection_bounds('_t64_frames')
+
+    out_path = os.path.join(tmpdir, 'sheet.png')
+    r = cmd('export_sprite_sheet', {
+        'output_path': out_path, 'columns': COLUMNS, 'padding': PADDING,
+        'source': 'layers', 'image_index': image_index('_t64_frames'),
+    })
+    print(f"export_sprite_sheet: {json.dumps(r)[:300]}")
+    if r.get('status') != 'success':
+        fail(f"export_sprite_sheet failed: {r.get('error', r)}")
+    if not os.path.isfile(out_path):
+        fail(f"export_sprite_sheet reported success but wrote no file at {out_path}")
+
+    rows = -(-len(FRAMES) // COLUMNS)
+    want = (COLUMNS * FRAME_W + (COLUMNS - 1) * PADDING, rows * FRAME_H + (rows - 1) * PADDING)
+    width, height, color_type = png_header(out_path)
+    if (width, height) != want:
+        fail(f"sheet is {width}x{height}, expected {want[0]}x{want[1]}")
+    if color_type != 6:  # 6 = RGBA
+        fail(f"sheet PNG has color type {color_type}, expected 6 (RGBA): background was flattened")
+
+    centers = [((i % COLUMNS) * (FRAME_W + PADDING) + FRAME_W // 2,
+                (i // COLUMNS) * (FRAME_H + PADDING) + FRAME_H // 2) for i in range(len(FRAMES))]
+    gaps = [(FRAME_W + PADDING // 2, FRAME_H // 2),   # between the columns
+            (FRAME_W // 2, FRAME_H + PADDING // 2)]   # between the rows
+    pixels = sample(out_path, centers + gaps)
+    for i, ((name, rgb), px) in enumerate(zip(FRAMES, pixels)):
+        if px != [*map(float, rgb), 1.0]:
+            fail(f"cell {i} should be opaque {name}, got RGBA {px}")
+    for (x, y), px in zip(gaps, pixels[len(FRAMES):]):
+        if px[3] != 0.0:
+            fail(f"padding pixel at ({x}, {y}) is not transparent: RGBA {px}")
+    print(f"PASS: sheet is {width}x{height} RGBA, each frame in its cell "
+          "(hidden frame included), padding transparent")
+
+    if context_background() != bg_before:
+        fail(f"background color changed from {bg_before} to {context_background()}")
+    if selection_bounds('_t64_frames') != sel_before:
+        fail(f"source selection changed from {sel_before} to {selection_bounds('_t64_frames')}")
+    print("PASS: background color and source selection unchanged")
+
+
+def check_sprite_sheet_mixed_frames(tmpdir):
+    """A text-layer frame must export, and a frame larger than its cell is clipped.
+
+    Frames, top layer first: a red 30x20 layer (sets the cell size), a blue
+    60x40 layer that would spill past its cell into the padding and the next
+    cell, and a text layer. The large frame is in the middle so a spill would
+    land on the canvas. Gimp.TextLayer.resize() hides the 4-argument
+    Layer.resize(), which made a text frame fail the whole export.
+    """
+    # Each layer is inserted at the top, so insert the bottom frame first.
+    py(
+        "from gi.repository import Gimp, Gegl",
+        f"_t64_mixed = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
+        "Gimp.context_push()",
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        "_t64_l = Gimp.TextLayer.new(_t64_mixed, '7', Gimp.Font.get_by_name('Sans-serif'), "
+        "14.0, Gimp.Unit.pixel())",
+        "_t64_mixed.insert_layer(_t64_l, None, 0)",
+        f"_t64_l = Gimp.Layer.new(_t64_mixed, 'big', {FRAME_W * 2}, {FRAME_H * 2}, "
+        "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_mixed.insert_layer(_t64_l, None, 0)",
+        "Gimp.context_set_foreground(Gegl.Color.new('blue'))",
+        "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        f"_t64_l = Gimp.Layer.new(_t64_mixed, 'red', {FRAME_W}, {FRAME_H}, "
+        "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_mixed.insert_layer(_t64_l, None, 0)",
+        "Gimp.context_set_foreground(Gegl.Color.new('red'))",
+        "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        "Gimp.context_pop()",
+    )
+    out_path = os.path.join(tmpdir, 'mixed.png')
+    r = cmd('export_sprite_sheet', {
+        'output_path': out_path, 'columns': 3, 'padding': PADDING,
+        'source': 'layers', 'image_index': image_index('_t64_mixed'),
+    })
+    print(f"export_sprite_sheet (text and oversized frames): {json.dumps(r)[:300]}")
+    if r.get('status') != 'success':
+        fail(f"export_sprite_sheet with a text-layer frame failed: {r.get('error', r)}")
+
+    want = (3 * FRAME_W + 2 * PADDING, FRAME_H)
+    width, height, _ = png_header(out_path)
+    if (width, height) != want:
+        fail(f"sheet is {width}x{height}, expected {want[0]}x{want[1]}")
+    big_x = FRAME_W + PADDING  # the large frame is frame 1
+    points = [(big_x + FRAME_W - 1, FRAME_H - 1),          # last pixel of its cell
+              (big_x + FRAME_W + PADDING // 2, 5)]          # gap after it
+    corner, gap = sample(out_path, points)
+    if corner != [0.0, 0.0, 1.0, 1.0]:
+        fail(f"large frame's cell should be filled blue up to its edge, got RGBA {corner}")
+    if gap[3] != 0.0:
+        fail(f"large frame spilled into the padding after its cell: RGBA {gap}")
+    print(f"PASS: text-layer frame exported, {FRAME_W * 2}x{FRAME_H * 2} frame clipped to its cell")
+
+
+def check_edit_text_font():
+    py(
+        "from gi.repository import Gimp",
+        "_t64_text = Gimp.Image.new(200, 80, Gimp.ImageBaseType.RGB)",
+        "_t64_bg = Gimp.Layer.new(_t64_text, 'bg', 200, 80, "
+        "Gimp.ImageType.RGB_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_text.insert_layer(_t64_bg, None, 0)",
+    )
+    r = cmd('add_text', {'image_index': image_index('_t64_text'), 'text': 'Font test',
+                         'x': 5, 'y': 5, 'font': 'Sans-serif', 'size': 20, 'color': 'black'})
+    if r.get('status') != 'success':
+        fail(f"add_text failed: {r.get('error', r)}")
+    layer_name = r['results']['layer_name']
+
+    r = cmd('edit_text', {'image_index': image_index('_t64_text'),
+                          'layer_name': layer_name, 'font': 'Serif'})
+    print(f"edit_text font=Serif: {json.dumps(r)[:300]}")
+    if r.get('status') != 'success':
+        fail(f"edit_text with a font failed: {r.get('error', r)}")
+    if r['results'].get('font') != 'Serif':
+        fail(f"edit_text reported font {r['results'].get('font')!r}, expected 'Serif'")
+    applied = py(f"print(next(l for l in _t64_text.get_layers() if l.get_name() == {layer_name!r})"
+                 ".get_font().get_name())")
+    if applied != 'Serif':
+        fail(f"text layer font is {applied!r} after edit_text, expected 'Serif'")
+    print("PASS: edit_text changed the font to Serif and reported it")
+
+
+def main():
+    tmpdir = tempfile.mkdtemp(prefix='gimp-mcp-64-')
+    try:
+        check_sprite_sheet(tmpdir)
+        check_sprite_sheet_mixed_frames(tmpdir)
+        check_edit_text_font()
+        return 0
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        for var in ('_t64_frames', '_t64_mixed', '_t64_text', '_t64_load'):
+            try:
+                py(f"if '{var}' in globals() and {var}.is_valid(): {var}.delete()")
+            except SystemExit:
+                print(f"  (cleanup) could not delete {var}", file=sys.stderr)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
