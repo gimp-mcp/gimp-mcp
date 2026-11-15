@@ -48,9 +48,15 @@ the tag, not earlier.
 
 ## 3. Tag and push
 
+Tag the release PR's merge commit, not the tip of `main`. If another PR merged after the
+release PR, tagging the tip would publish that code too, while its changelog entries still
+sit under `[Unreleased]`.
+
 ```bash
 git checkout main && git pull --ff-only
-git tag -a vX.Y.Z -m "gimp-mcp-plugin X.Y.Z"
+commit=$(gh pr view <release PR number> --repo gimp-mcp/gimp-mcp --json mergeCommit --jq .mergeCommit.oid)
+git log --oneline -1 "$commit"   # should be "Release X.Y.Z (#...)"
+git tag -a vX.Y.Z -m "gimp-mcp-plugin X.Y.Z" "$commit"
 git push origin vX.Y.Z
 ```
 
@@ -76,11 +82,14 @@ PyPI takes a while to show a new upload:
 - `uvx` can report "no version" for a minute or two after that. Wait until
   `https://pypi.org/simple/gimp-mcp-plugin/` lists the new wheel.
 
-Then update your own GIMP and restart it:
+Then update your own setup:
 
 ```bash
 uvx gimp-mcp-plugin@X.Y.Z install-plugin
 ```
+
+Restart your MCP client so it starts the new server, and restart GIMP so it loads the new
+plugin. If only one of them restarts, `check_server` reports a version mismatch.
 
 ## If something goes wrong
 
