@@ -31,6 +31,12 @@ REGION = (8, 8, 16, 16)  # x, y, w, h: crosses the blue square's right and botto
 # Points in region coordinates and the colour each must have (image point = point + (8, 8))
 EXPECTED = [((4, 4), 'blue'), ((12, 4), 'red'), ((4, 12), 'red'), ((12, 12), 'red')]
 USER_SELECTION = (2, 3, 10, 8)  # x, y, w, h set on the image before the snapshot
+# Run first inside each pushed context: the push keeps the user's settings,
+# and a low paint opacity, another paint mode or feathering would change the
+# fixture's pixels
+RESET_CONTEXT = ("    Gimp.context_set_opacity(100.0)\n"
+                 "    Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)\n"
+                 "    Gimp.context_set_feather(False)\n")
 
 
 def send(msg, timeout=60):
@@ -133,6 +139,7 @@ def create_image():
         "_t17_img.insert_layer(_t17_top, None, 0)",
         "Gimp.context_push()\n"
         "try:\n"
+        + RESET_CONTEXT +
         "    Gimp.context_set_foreground(Gegl.Color.new('#ff0000'))\n"
         "    Gimp.Drawable.edit_fill(_t17_base, Gimp.FillType.FOREGROUND)\n"
         "    Gimp.Drawable.edit_fill(_t17_top, Gimp.FillType.TRANSPARENT)\n"
@@ -147,6 +154,7 @@ def create_image():
         "_t17_img.insert_layer(_t17_hidden, None, 0)",
         "Gimp.context_push()\n"
         "try:\n"
+        + RESET_CONTEXT +
         "    Gimp.context_set_foreground(Gegl.Color.new('#00ff00'))\n"
         "    Gimp.Selection.none(_t17_img)\n"
         "    Gimp.Drawable.edit_fill(_t17_hidden, Gimp.FillType.FOREGROUND)\n"
