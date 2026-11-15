@@ -1650,11 +1650,11 @@ def create_layer(
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
-    - position: Stack position, counted from the top: 0 = top, 1 = second from the
-      top, and so on; a value past the bottom puts the layer at the bottom.
-      -1 (default) = directly above the selected layer (the highest one if several
-      are selected), inside its layer group if it is in one; if the selected layer
-      is a group, at the top inside that group.
+    - position: Stack position among the image's top-level layers, counted from the
+      top: 0 = top, 1 = second from the top, and so on; a value past the bottom puts
+      the layer at the bottom. -1 (default) = directly above the selected layer
+      (the highest one if several are selected), inside its layer group if it is
+      in one; if the selected layer is a group, at the top inside that group.
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id, width, height, position}; position is the value
@@ -1817,9 +1817,10 @@ def reorder_layer(
     """Move a layer to a new stack position.
 
     Parameters:
-    - new_position: Target stack index, counted from the top: 0 = top, 1 = second
-      from the top, and so on; a value past the bottom moves the layer to the bottom,
-      and a negative value moves it to the top
+    - new_position: Target stack index among the image's top-level layers, counted
+      from the top: 0 = top, 1 = second from the top, and so on; a value past the
+      bottom moves the layer to the bottom, and a negative value moves it to the top.
+      A layer inside a layer group is moved out of the group.
     - layer_name / layer_index: Identify the layer (defaults to active layer)
     - image_index: Target image index (default 0)
 
