@@ -4222,10 +4222,22 @@ class MCPPlugin(Gimp.PlugIn):
                                             f"Copying frame {i}")
                     self._check_ok(sheet.insert_layer(frame_layer, None, 0), f"Adding frame {i}")
                     # Copy pixels only, as a paste would: a hidden, faded or
-                    # blended source layer still gives a plain frame.
+                    # blended source layer still gives a plain frame. A locked
+                    # visibility would make set_visible() a silent no-op.
+                    frame_layer.set_lock_visibility(False)
                     frame_layer.set_visible(True)
                     frame_layer.set_opacity(100.0)
                     frame_layer.set_mode(Gimp.LayerMode.NORMAL)
+                    if isinstance(frame_layer, Gimp.GroupLayer):
+                        # Unlocking a group doesn't unlock its children, so merge
+                        # the group copy into one plain, unlocked layer.
+                        frame_layer = self._check_item(frame_layer.merge(),
+                                                       f"Merging frame {i}")
+                    # The copy inherits the source's locks, which would block the
+                    # alpha, resize and move below. Unlock the copy only.
+                    frame_layer.set_lock_content(False)
+                    frame_layer.set_lock_position(False)
+                    frame_layer.set_lock_alpha(False)
                     if not frame_layer.has_alpha():
                         self._check_ok(frame_layer.add_alpha(), f"Adding alpha to frame {i}")
                     # Clip to the frame cell so a larger layer can't spill into
@@ -4233,7 +4245,8 @@ class MCPPlugin(Gimp.PlugIn):
                     # Gimp.TextLayer.resize() takes only (width, height) and hides it.
                     self._check_ok(Gimp.Layer.resize(frame_layer, frame_w, frame_h, off_x, off_y),
                                    f"Clipping frame {i}")
-                    frame_layer.set_offsets(dest_x, dest_y)
+                    self._check_ok(frame_layer.set_offsets(dest_x, dest_y),
+                                   f"Placing frame {i}")
 
                 # flatten=False keeps the transparent background between frames;
                 # the PNG export merges the visible layers.

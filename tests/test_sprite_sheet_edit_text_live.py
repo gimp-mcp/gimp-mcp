@@ -4,12 +4,13 @@
 1. export_sprite_sheet used Gimp.ImageBaseType.RGBA, which GIMP 3.2 doesn't
    have, so it always failed. It also flattened the sheet on export, which
    filled the transparent background. The test builds a 4-frame image (one
-   frame hidden), exports a 2x2 sheet with padding, and checks the PNG's size,
-   that it has an alpha channel, that each frame is in its cell and that the
-   horizontal and vertical padding is transparent. It also checks that the
-   export leaves the context background color and the source image's
-   selection as they were. A second sheet checks that a text-layer frame
-   exports and that a frame larger than its cell is clipped to it.
+   frame hidden and visibility-locked), exports a 2x2 sheet with padding, and
+   checks the PNG's size, that it has an alpha channel, that each frame is in
+   its cell and that the horizontal and vertical padding is transparent. It
+   also checks that the export leaves the context background color and the
+   source image's selection as they were. A second sheet checks that a
+   text-layer frame and a group frame with a locked child export, and that a
+   locked frame larger than its cell is clipped to it.
 2. edit_text passed the font name as a string, but gimp-text-layer-set-font
    takes a Gimp.Font, so changing the font always failed. The test changes a
    text layer's font and checks the reported and the applied font.
@@ -26,6 +27,7 @@ import socket
 import struct
 import sys
 import tempfile
+import textwrap
 
 HOST, PORT = '127.0.0.1', int(os.environ.get('GIMP_MCP_PORT', 9877))
 FRAME_W, FRAME_H, PADDING, COLUMNS = 30, 20, 4, 2
@@ -63,6 +65,17 @@ def py(*lines):
     if r.get('status') != 'success':
         fail(f"exec failed: {r.get('error', r)}")
     return ''.join(r.get('results') or []).strip()
+
+
+def py_in_context(*lines):
+    """Run lines between Gimp.context_push() and context_pop() as one command.
+
+    One command with try/finally pops the context even if a line fails; split
+    across commands, a failing line would leave the context pushed. A line may
+    be a multi-line block.
+    """
+    body = ''.join(textwrap.indent(line, '    ') + '\n' for line in lines)
+    return py(f"Gimp.context_push()\ntry:\n{body}finally:\n    Gimp.context_pop()")
 
 
 def fail(msg):
@@ -112,10 +125,9 @@ def selection_bounds(var):
 
 
 def check_sprite_sheet(tmpdir):
+    py("from gi.repository import Gimp, Gegl")
     lines = [
-        "from gi.repository import Gimp, Gegl",
         f"_t64_frames = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
-        "Gimp.context_push()",
         "Gimp.context_set_opacity(100.0)",
         "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
     ]
@@ -129,14 +141,24 @@ def check_sprite_sheet(tmpdir):
             "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
         ]
         if i == HIDDEN_FRAME:
-            lines.append("_t64_l.set_visible(False)")
-    lines += [
-        "Gimp.context_pop()",
-        # A user's state the export must not touch.
-        "Gimp.context_set_background(Gegl.Color.new('rgb(1.0, 0.5, 0.0)'))",
-        "_t64_frames.select_rectangle(Gimp.ChannelOps.REPLACE, %d, %d, %d, %d)" % USER_SELECTION,
-    ]
-    py(*lines)
+            # A visibility lock would make the export's set_visible() a no-op.
+            lines += ["_t64_l.set_visible(False)", "_t64_l.set_lock_visibility(True)"]
+    lines.append(
+        # A user's selection the export must not touch.
+        "_t64_frames.select_rectangle(Gimp.ChannelOps.REPLACE, %d, %d, %d, %d)" % USER_SELECTION)
+    py_in_context(*lines)
+
+    # Set a user's background color the export must not touch, in a context
+    # that's popped afterwards so the plugin's own background is restored.
+    py("Gimp.context_push()")
+    try:
+        py("Gimp.context_set_background(Gegl.Color.new('rgb(1.0, 0.5, 0.0)'))")
+        export_and_check_sheet(tmpdir)
+    finally:
+        py("Gimp.context_pop()")
+
+
+def export_and_check_sheet(tmpdir):
     bg_before = context_background()
     sel_before = selection_bounds('_t64_frames')
 
@@ -181,21 +203,33 @@ def check_sprite_sheet(tmpdir):
 
 
 def check_sprite_sheet_mixed_frames(tmpdir):
-    """A text-layer frame must export, and a frame larger than its cell is clipped.
+    """Text, group and locked frames must export; a large frame is clipped.
 
-    Frames, top layer first: a red 30x20 layer (sets the cell size), a blue
-    60x40 layer that would spill past its cell into the padding and the next
-    cell, and a text layer. The large frame is in the middle so a spill would
-    land on the canvas. Gimp.TextLayer.resize() hides the 4-argument
-    Layer.resize(), which made a text frame fail the whole export.
+    Frames, top layer first:
+    - a red 30x20 layer, which sets the cell size;
+    - a blue 60x40 layer with content and position locks. It would spill past
+      its cell into the padding, and it's in the middle so a spill would land
+      on the canvas. The copy inherits the locks, which would block clipping.
+    - a text layer. Gimp.TextLayer.resize() hides the 4-argument
+      Layer.resize(), which made a text frame fail the whole export.
+    - a group whose lime child has content and position locks. Unlocking the
+      group copy doesn't unlock the child, so the copy must be merged.
     """
     # Each layer is inserted at the top, so insert the bottom frame first.
-    py(
-        "from gi.repository import Gimp, Gegl",
+    py("from gi.repository import Gimp, Gegl")
+    py_in_context(
         f"_t64_mixed = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
-        "Gimp.context_push()",
         "Gimp.context_set_opacity(100.0)",
         "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        "_t64_group = Gimp.GroupLayer.new(_t64_mixed, 'group')",
+        "_t64_mixed.insert_layer(_t64_group, None, 0)",
+        f"_t64_l = Gimp.Layer.new(_t64_mixed, 'child', {FRAME_W}, {FRAME_H}, "
+        "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_mixed.insert_layer(_t64_l, _t64_group, 0)",
+        "Gimp.context_set_foreground(Gegl.Color.new('lime'))",
+        "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        "_t64_l.set_lock_content(True)",
+        "_t64_l.set_lock_position(True)",
         "_t64_l = Gimp.TextLayer.new(_t64_mixed, '7', Gimp.Font.get_by_name('Sans-serif'), "
         "14.0, Gimp.Unit.pixel())",
         "_t64_mixed.insert_layer(_t64_l, None, 0)",
@@ -204,35 +238,45 @@ def check_sprite_sheet_mixed_frames(tmpdir):
         "_t64_mixed.insert_layer(_t64_l, None, 0)",
         "Gimp.context_set_foreground(Gegl.Color.new('blue'))",
         "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        # The copy inherits these locks; they must not block clipping it.
+        "_t64_big = _t64_l",
+        "_t64_big.set_lock_content(True)",
+        "_t64_big.set_lock_position(True)",
         f"_t64_l = Gimp.Layer.new(_t64_mixed, 'red', {FRAME_W}, {FRAME_H}, "
         "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
         "_t64_mixed.insert_layer(_t64_l, None, 0)",
         "Gimp.context_set_foreground(Gegl.Color.new('red'))",
         "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
-        "Gimp.context_pop()",
     )
     out_path = os.path.join(tmpdir, 'mixed.png')
     r = cmd('export_sprite_sheet', {
-        'output_path': out_path, 'columns': 3, 'padding': PADDING,
+        'output_path': out_path, 'columns': 4, 'padding': PADDING,
         'source': 'layers', 'image_index': image_index('_t64_mixed'),
     })
-    print(f"export_sprite_sheet (text and oversized frames): {json.dumps(r)[:300]}")
+    print(f"export_sprite_sheet (text, group and locked frames): {json.dumps(r)[:300]}")
     if r.get('status') != 'success':
-        fail(f"export_sprite_sheet with a text-layer frame failed: {r.get('error', r)}")
+        fail(f"export_sprite_sheet with text, group and locked frames failed: {r.get('error', r)}")
 
-    want = (3 * FRAME_W + 2 * PADDING, FRAME_H)
+    want = (4 * FRAME_W + 3 * PADDING, FRAME_H)
     width, height, _ = png_header(out_path)
     if (width, height) != want:
         fail(f"sheet is {width}x{height}, expected {want[0]}x{want[1]}")
     big_x = FRAME_W + PADDING  # the large frame is frame 1
     points = [(big_x + FRAME_W - 1, FRAME_H - 1),          # last pixel of its cell
-              (big_x + FRAME_W + PADDING // 2, 5)]          # gap after it
-    corner, gap = sample(out_path, points)
+              (big_x + FRAME_W + PADDING // 2, 5),          # gap after it
+              (3 * (FRAME_W + PADDING) + FRAME_W // 2, FRAME_H // 2)]  # group frame
+    corner, gap, group = sample(out_path, points)
     if corner != [0.0, 0.0, 1.0, 1.0]:
         fail(f"large frame's cell should be filled blue up to its edge, got RGBA {corner}")
     if gap[3] != 0.0:
         fail(f"large frame spilled into the padding after its cell: RGBA {gap}")
-    print(f"PASS: text-layer frame exported, {FRAME_W * 2}x{FRAME_H * 2} frame clipped to its cell")
+    if group != [0.0, 1.0, 0.0, 1.0]:
+        fail(f"group frame's cell should be lime, got RGBA {group}")
+    locks = py("print(_t64_big.get_lock_content(), _t64_big.get_lock_position())")
+    if locks != "True True":
+        fail(f"source frame's content/position locks changed to {locks}")
+    print(f"PASS: text and group frames exported, locked {FRAME_W * 2}x{FRAME_H * 2} frame "
+          "clipped to its cell, source locks unchanged")
 
 
 def check_edit_text_font():
