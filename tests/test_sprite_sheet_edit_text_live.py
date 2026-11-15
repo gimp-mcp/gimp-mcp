@@ -10,7 +10,9 @@
    also checks that the export leaves the context background color and the
    source image's selection as they were. A second sheet checks that a
    text-layer frame and a group frame with a locked child export, and that a
-   locked frame larger than its cell is clipped to it.
+   locked frame larger than its cell is clipped to it. A third sheet checks
+   that a CLIP_TO_BACKDROP frame stays visible, that a live drop shadow is
+   cropped to its cell, and that a mask shown for editing isn't drawn.
 2. edit_text passed the font name as a string, but gimp-text-layer-set-font
    takes a Gimp.Font, so changing the font always failed. The test changes a
    text layer's font and checks the reported and the applied font.
@@ -279,6 +281,83 @@ def check_sprite_sheet_mixed_frames(tmpdir):
           "clipped to its cell, source locks unchanged")
 
 
+def check_sprite_sheet_frame_effects(tmpdir):
+    """Composite mode and live filters must not leak from a source frame.
+
+    Frames, top layer first:
+    - a red 30x20 layer, which sets the cell size. It has non-AUTO blend and
+      composite spaces, which the copy resets; on a transparent sheet they
+      don't change the pixels, so this only checks the reset doesn't fail.
+    - a lime layer in NORMAL mode with composite mode CLIP_TO_BACKDROP. Resetting
+      the mode to NORMAL keeps that composite mode, which would make the frame
+      invisible on the transparent sheet.
+    - a blue layer with a live drop shadow 12 px to the left, which would draw
+      into the padding before its cell unless the filter is merged before the
+      crop. Its left and right edges must stay blue, so the merge, which grows
+      the layer to the left, must not move the frame's origin.
+    - a yellow layer whose white mask is shown for editing (Alt-click). The
+      copy keeps that setting, which would draw the mask instead of the frame.
+    """
+    py("from gi.repository import Gimp, Gegl")
+    py_in_context(
+        f"_t64_fx = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        *[line for name, color in (('masked', 'yellow'), ('shadowed', 'blue'),
+                                   ('clipped', 'lime'), ('red', 'red'))
+          for line in (
+              f"_t64_l = Gimp.Layer.new(_t64_fx, '{name}', {FRAME_W}, {FRAME_H}, "
+              "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+              "_t64_fx.insert_layer(_t64_l, None, 0)",
+              f"Gimp.context_set_foreground(Gegl.Color.new('{color}'))",
+              "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+              f"_t64_{name} = _t64_l",
+          )],
+        "_t64_clipped.set_composite_mode(Gimp.LayerCompositeMode.CLIP_TO_BACKDROP)",
+        "_t64_masked.add_mask(_t64_masked.create_mask(Gimp.AddMaskType.WHITE))",
+        "_t64_masked.set_show_mask(True)",
+        "_t64_red.set_blend_space(Gimp.LayerColorSpace.RGB_PERCEPTUAL)",
+        "_t64_red.set_composite_space(Gimp.LayerColorSpace.RGB_LINEAR)",
+        "_t64_sf = Gimp.DrawableFilter.new(_t64_shadowed, 'gegl:dropshadow', 'shadow')",
+        "_t64_cfg = _t64_sf.get_config()",
+        "_t64_cfg.set_property('x', -12.0)",
+        "_t64_cfg.set_property('y', 0.0)",
+        "_t64_cfg.set_property('radius', 0.0)",
+        "_t64_cfg.set_property('opacity', 2.0)",
+        "_t64_sf.update()",
+        "_t64_shadowed.append_filter(_t64_sf)",
+    )
+    out_path = os.path.join(tmpdir, 'effects.png')
+    r = cmd('export_sprite_sheet', {
+        'output_path': out_path, 'columns': 4, 'padding': PADDING,
+        'source': 'layers', 'image_index': image_index('_t64_fx'),
+    })
+    print(f"export_sprite_sheet (composite mode and live filter): {json.dumps(r)[:300]}")
+    if r.get('status') != 'success':
+        fail(f"export_sprite_sheet with a filtered frame failed: {r.get('error', r)}")
+
+    cell = FRAME_W + PADDING
+    points = [(FRAME_W // 2, FRAME_H // 2),                 # frame with non-AUTO spaces
+              (cell + FRAME_W // 2, FRAME_H // 2),          # clip-to-backdrop frame
+              (2 * cell - PADDING // 2, FRAME_H // 2),       # gap before the shadowed frame
+              (2 * cell, FRAME_H // 2),                      # its left edge
+              (2 * cell + FRAME_W - 1, FRAME_H // 2),        # its right edge
+              (3 * cell + FRAME_W // 2, FRAME_H // 2)]       # frame with a shown mask
+    red, clipped, gap, left, right, masked = sample(out_path, points)
+    if red != [1.0, 0.0, 0.0, 1.0]:
+        fail(f"frame with non-AUTO blend/composite spaces should be red, got RGBA {red}")
+    if clipped != [0.0, 1.0, 0.0, 1.0]:
+        fail(f"CLIP_TO_BACKDROP frame should be opaque lime, got RGBA {clipped}")
+    if gap[3] != 0.0:
+        fail(f"drop shadow leaked into the padding before its cell: RGBA {gap}")
+    if left != [0.0, 0.0, 1.0, 1.0] or right != [0.0, 0.0, 1.0, 1.0]:
+        fail(f"shadowed frame moved in its cell: left edge {left}, right edge {right}")
+    if masked != [1.0, 1.0, 0.0, 1.0]:
+        fail(f"frame with a shown mask should be yellow, got RGBA {masked} (the mask was drawn)")
+    print("PASS: CLIP_TO_BACKDROP frame visible, live drop shadow cropped to its cell, "
+          "shown mask not drawn")
+
+
 def check_edit_text_font():
     py(
         "from gi.repository import Gimp",
@@ -312,15 +391,22 @@ def main():
     try:
         check_sprite_sheet(tmpdir)
         check_sprite_sheet_mixed_frames(tmpdir)
+        check_sprite_sheet_frame_effects(tmpdir)
         check_edit_text_font()
         return 0
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        for var in ('_t64_frames', '_t64_mixed', '_t64_text', '_t64_load'):
+        for var in ('_t64_frames', '_t64_mixed', '_t64_fx', '_t64_text', '_t64_load'):
             try:
                 py(f"if '{var}' in globals() and {var}.is_valid(): {var}.delete()")
             except SystemExit:
                 print(f"  (cleanup) could not delete {var}", file=sys.stderr)
+        # The plugin's Python namespace is shared and persistent, so drop the
+        # test's names too, not only the images they pointed at.
+        try:
+            py("[globals().pop(n) for n in [n for n in globals() if n.startswith('_t64_')]]")
+        except SystemExit:
+            print("  (cleanup) could not remove the test's _t64_* names", file=sys.stderr)
 
 
 if __name__ == '__main__':

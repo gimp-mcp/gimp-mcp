@@ -4162,6 +4162,65 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    def _plain_frame_copy(self, src, dest_image, what):
+        """Copy a drawable into dest_image as a plain layer showing its content.
+
+        Used for sprite sheet frames. new_from_drawable() copies every setting
+        of the source layer, and some would change or hide the frame on the
+        sheet. The rule, applied to every setter Gimp.Layer has in GIMP 3.2:
+
+        - Keep what defines the frame's content: its pixels, its mask (and
+          whether the mask is applied, as GIMP shows it) and its live filters,
+          which are merged into the pixels so they can't draw outside the cell.
+          A group is merged into one layer.
+        - Neutralize how the layer is composited and locked: visible, 100%
+          opacity, NORMAL mode, AUTO composite mode, blend and composite
+          spaces, mask not shown for editing, no locks.
+        - Leave settings that don't affect pixels: name, color tag, tattoo,
+          expanded, edit mask.
+
+        Returns (layer, origin_x, origin_y): the copy, which has an alpha
+        channel, and its offsets right after it was inserted. Merging filters
+        can grow the layer up or left, so callers place the frame by that
+        origin rather than by the layer's final offsets.
+        """
+        layer = self._check_item(Gimp.Layer.new_from_drawable(src, dest_image),
+                                 f"Copying {what}")
+        self._check_ok(dest_image.insert_layer(layer, None, 0), f"Adding {what}")
+        _, origin_x, origin_y = layer.get_offsets()
+
+        # A locked visibility would make set_visible() a silent no-op, so
+        # unlock it first. Composite settings go before a group merge, which
+        # renders the group with them.
+        self._check_ok(layer.set_lock_visibility(False), f"Unlocking {what}")
+        self._check_ok(layer.set_visible(True), f"Showing {what}")
+        self._check_ok(layer.set_opacity(100.0), f"Setting the opacity of {what}")
+        self._check_ok(layer.set_mode(Gimp.LayerMode.NORMAL), f"Setting the mode of {what}")
+        # set_mode() keeps the composite mode when the mode was already NORMAL;
+        # CLIP_TO_BACKDROP would hide the frame on the transparent sheet.
+        self._check_ok(layer.set_composite_mode(Gimp.LayerCompositeMode.AUTO),
+                       f"Setting the composite mode of {what}")
+        self._check_ok(layer.set_blend_space(Gimp.LayerColorSpace.AUTO),
+                       f"Setting the blend space of {what}")
+        self._check_ok(layer.set_composite_space(Gimp.LayerColorSpace.AUTO),
+                       f"Setting the composite space of {what}")
+        # A mask shown for editing (Alt-click) would render as the mask itself.
+        if layer.get_mask():
+            self._check_ok(layer.set_show_mask(False), f"Hiding the mask of {what}")
+        if isinstance(layer, Gimp.GroupLayer):
+            # Unlocking a group doesn't unlock its children, so merge the group
+            # copy into one plain, unlocked layer.
+            layer = self._check_item(layer.merge(), f"Merging {what}")
+        # Locks would block the filter merge, alpha, resize and move. Only the
+        # copy is unlocked; the source keeps its locks.
+        self._check_ok(layer.set_lock_content(False), f"Unlocking {what}")
+        self._check_ok(layer.set_lock_position(False), f"Unlocking {what}")
+        self._check_ok(layer.set_lock_alpha(False), f"Unlocking {what}")
+        self._check_ok(layer.merge_filters(), f"Applying the filters of {what}")
+        if not layer.has_alpha():
+            self._check_ok(layer.add_alpha(), f"Adding alpha to {what}")
+        return layer, origin_x, origin_y
+
     def _export_sprite_sheet(self, params):
         """Combine frames into a sprite sheet."""
         try:
@@ -4182,8 +4241,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return {"status": "error", "error": "No frames found"}
 
             # Use first frame dimensions as the cell size
-            frame_w = frames[0].get_width()  if hasattr(frames[0], 'get_width')  else frames[0].get_width()
-            frame_h = frames[0].get_height() if hasattr(frames[0], 'get_height') else frames[0].get_height()
+            frame_w = frames[0].get_width()
+            frame_h = frames[0].get_height()
             n = len(frames)
             cols = int(columns) if columns else max(1, math.ceil(math.sqrt(n)))
             rows = math.ceil(n / cols)
@@ -4194,6 +4253,8 @@ class MCPPlugin(Gimp.PlugIn):
             # ImageBaseType has no RGBA; alpha comes from the RGBA_IMAGE layer below.
             sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGB)
             try:
+                # A scratch image: don't keep undo history for its edits.
+                sheet.undo_disable()
                 bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
                 self._check_ok(sheet.insert_layer(bg_layer, None, 0),
                                "Adding the sprite sheet background")
@@ -4218,32 +4279,17 @@ class MCPPlugin(Gimp.PlugIn):
                     else:
                         src_drawable = frame
                         off_x, off_y = 0, 0
-                    frame_layer = self._check_item(Gimp.Layer.new_from_drawable(src_drawable, sheet),
-                                            f"Copying frame {i}")
-                    self._check_ok(sheet.insert_layer(frame_layer, None, 0), f"Adding frame {i}")
-                    # Copy pixels only, as a paste would: a hidden, faded or
-                    # blended source layer still gives a plain frame. A locked
-                    # visibility would make set_visible() a silent no-op.
-                    frame_layer.set_lock_visibility(False)
-                    frame_layer.set_visible(True)
-                    frame_layer.set_opacity(100.0)
-                    frame_layer.set_mode(Gimp.LayerMode.NORMAL)
-                    if isinstance(frame_layer, Gimp.GroupLayer):
-                        # Unlocking a group doesn't unlock its children, so merge
-                        # the group copy into one plain, unlocked layer.
-                        frame_layer = self._check_item(frame_layer.merge(),
-                                                       f"Merging frame {i}")
-                    # The copy inherits the source's locks, which would block the
-                    # alpha, resize and move below. Unlock the copy only.
-                    frame_layer.set_lock_content(False)
-                    frame_layer.set_lock_position(False)
-                    frame_layer.set_lock_alpha(False)
-                    if not frame_layer.has_alpha():
-                        self._check_ok(frame_layer.add_alpha(), f"Adding alpha to frame {i}")
+                    frame_layer, origin_x, origin_y = self._plain_frame_copy(
+                        src_drawable, sheet, f"frame {i}")
                     # Clip to the frame cell so a larger layer can't spill into
-                    # the next cell. Call the base Layer.resize(): on a text layer,
-                    # Gimp.TextLayer.resize() takes only (width, height) and hides it.
-                    self._check_ok(Gimp.Layer.resize(frame_layer, frame_w, frame_h, off_x, off_y),
+                    # the next cell, keeping the frame's origin if merging grew
+                    # the layer up or left. Call the base Layer.resize(): on a
+                    # text layer, Gimp.TextLayer.resize() takes only (width,
+                    # height) and hides it.
+                    _, cur_x, cur_y = frame_layer.get_offsets()
+                    self._check_ok(Gimp.Layer.resize(frame_layer, frame_w, frame_h,
+                                                     off_x + cur_x - origin_x,
+                                                     off_y + cur_y - origin_y),
                                    f"Clipping frame {i}")
                     self._check_ok(frame_layer.set_offsets(dest_x, dest_y),
                                    f"Placing frame {i}")
