@@ -38,6 +38,7 @@ EXECUTION_ERROR = Status("execution-error")
 # name -> (status, error message or None). Set per scenario.
 PDB_PROCS = {}
 CALLS = []  # (what, detail) records of side effects, cleared per scenario
+CONFIG = {}  # properties set on the most recently created procedure config
 # What direct libgimp calls (edit_fill, image.crop, file_overwrite, ...) return.
 # libgimp returns False instead of raising when GIMP rejects the call (#115).
 DIRECT_OK = {"value": True}
@@ -77,7 +78,8 @@ class FakeProc:
         return self._name
 
     def create_config(self):
-        return types.SimpleNamespace(set_property=lambda *a: None)
+        CONFIG.clear()
+        return types.SimpleNamespace(set_property=CONFIG.__setitem__)
 
     def run(self, cfg):
         CALLS.append(("run", self._name))
@@ -179,6 +181,17 @@ class FakeImage:
 
     def get_layers(self):
         return ["layer"]
+
+
+class LayerlessImage(FakeImage):
+    """An image without layers. As in GIMP 3.2, flatten() on it returns None."""
+
+    def get_layers(self):
+        return []
+
+    def flatten(self):
+        CALLS.append(("image", "flatten"))
+        return None
 
 
 OPEN_IMAGE = FakeImage()  # the image the user has open
@@ -570,6 +583,99 @@ def main():
                f"open deleted {OPEN_IMAGE.deleted}")
     DIRECT_OK["value"] = True
     FakePDB.last_error = None
+
+    # _export_to_path must use the GIMP 3 file-*-export procedures, and fail
+    # instead of writing PNG data under another format's name (#64, item 5).
+    out_dir = tempfile.mkdtemp()
+
+    def export(fmt, quality=80, flatten=False, image=None):
+        path = os.path.join(out_dir, f"x.{fmt}")
+        with open(path, "wb") as f:
+            f.write(b"12345")  # the fake procedure writes nothing; getsize needs a file
+        return plugin._export_to_path(image or FakeImage(), path, fmt, quality, flatten)
+
+    all_exports = {f"file-{f}-export": (SUCCESS, None) for f in ("png", "jpeg", "webp", "tiff", "bmp")}
+    for fmt, proc_name, quality in (("png", "file-png-export", None),
+                                    ("jpeg", "file-jpeg-export", 0.8),
+                                    ("JPG", "file-jpeg-export", 0.8),
+                                    ("webp", "file-webp-export", 80.0),
+                                    ("tiff", "file-tiff-export", None),
+                                    ("tif", "file-tiff-export", None),
+                                    ("bmp", "file-bmp-export", None)):
+        scenario(all_exports)
+        try:
+            size = export(fmt)
+            problem = None
+        except Exception as e:
+            problem = f"raised {e}"
+        runs = [c for c in CALLS if c[0] == "run"]
+        check(f"_export_to_path({fmt!r}) runs {proc_name} with quality {quality}",
+              problem or (None if size == 5 and runs == [("run", proc_name)]
+                          and CONFIG.get("quality") == quality
+                          and CONFIG.get("run-mode") == 1
+                          else f"size {size}, runs {runs}, config {CONFIG}"))
+
+    scenario({"file-png-export": (SUCCESS, None)})
+    problem = raises(lambda: export("jpeg"), "file-jpeg-export", "not found")
+    check("_export_to_path raises when the format's procedure is missing, without writing PNG",
+          problem or (None if not any(c[0] == "run" for c in CALLS) else f"calls {CALLS}"))
+
+    scenario(all_exports)
+    problem = raises(lambda: export("gif", flatten=True), "Unsupported export format 'gif'", "png")
+    check("_export_to_path raises for an unknown format before copying the image",
+          problem or (None if not CALLS else f"calls {CALLS}"))
+
+    for bad in (150, -1):
+        scenario(all_exports)
+        problem = raises(lambda: export("jpeg", quality=bad), "quality must be between 0 and 100")
+        check(f"_export_to_path rejects JPEG quality {bad}",
+              problem or (None if not CALLS else f"calls {CALLS}"))
+    scenario(all_exports)
+    try:
+        export("png", quality=150)
+        problem = None
+    except Exception as e:
+        problem = f"raised {e}"
+    check("_export_to_path ignores quality for PNG",
+          problem or (None if "quality" not in CONFIG and ("run", "file-png-export") in CALLS
+                      else f"calls {CALLS}, config {CONFIG}"))
+
+    scenario(all_exports)
+    problem = raises(lambda: export("png", flatten=True, image=LayerlessImage()), "no layers")
+    check("_export_to_path refuses an image without layers before copying it",
+          problem or (None if not CALLS else f"calls {CALLS}"))
+
+    # Tools exporting several files must reject a bad format before any work,
+    # not report success with a per-image error list.
+    for handler, params in (("_batch_export", {"format": "gif"}),
+                            ("_export_icon_sizes", {"format": "gif"})):
+        scenario(all_exports)
+        new_dir = os.path.join(out_dir, handler)
+        r = getattr(plugin, handler)(dict(params, output_dir=new_dir))
+        check(f"{handler[1:]} reports an error for an unsupported format before doing any work",
+              None if r["status"] == "error" and "Unsupported export format" in r["error"]
+              and not CALLS and not os.path.exists(new_dir)
+              else f"got {r}, calls {CALLS}, dir exists {os.path.exists(new_dir)}")
+
+    scenario(all_exports)
+    TEMP_IMAGES.clear()
+    new_dir = os.path.join(out_dir, "web_optimized")
+    r = plugin._export_web_optimized({"output_dir": new_dir, "jpeg_quality": 150})
+    check("export_web_optimized rejects jpeg_quality 150 before doing any work",
+          None if r["status"] == "error" and "quality must be between" in r["error"]
+          and not CALLS and not TEMP_IMAGES and not os.path.exists(new_dir)
+          else f"got {r}, calls {CALLS}, dir exists {os.path.exists(new_dir)}")
+
+    scenario(all_exports)
+    r = plugin._batch_export({"output_dir": os.path.join(out_dir, "bq"), "format": "webp",
+                              "quality": 101})
+    check("batch_export reports an error for quality 101",
+          None if r["status"] == "error" and "quality must be between" in r["error"] else f"got {r}")
+
+    scenario(all_exports)
+    r = plugin._export_image({"file_path": os.path.join(out_dir, "x.gif"), "format": "gif"})
+    check("export_image reports an error for an unsupported format",
+          None if r["status"] == "error" and "Unsupported export format" in r["error"] else f"got {r}")
 
     print(f"\n{'FAILED' if failures else 'PASSED'}: {len(failures)} failure(s)")
     return 1 if failures else 0

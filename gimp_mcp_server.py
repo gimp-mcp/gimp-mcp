@@ -784,12 +784,13 @@ def export_image(
     flatten: bool = True,
     image_index: int = 0
 ) -> dict:
-    """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
+    """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF, BMP).
 
     Parameters:
     - file_path: Absolute path for the output file
-    - format: Output format — "png" (default), "jpeg", "webp", "tiff"
-    - quality: JPEG/WEBP quality 1-100 (default 90; ignored for PNG/TIFF)
+    - format: Output format — "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp";
+      other formats are rejected
+    - quality: JPEG/WEBP quality 0-100 (default 90; ignored for PNG/TIFF/BMP)
     - flatten: Flatten all layers before export (default True)
     - image_index: Index of the image to export (default 0)
 
@@ -826,8 +827,8 @@ def batch_export(
 
     Parameters:
     - output_dir: Directory to write exported files into
-    - format: "png", "jpeg", "webp", "tiff" (default "png")
-    - quality: JPEG/WEBP quality (default 90)
+    - format: "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp"; other formats are rejected
+    - quality: JPEG/WEBP quality 0-100 (default 90)
     - name_pattern: Filename template — use {name} for image name, {index} for position
     - image_index: If set, export only that image; omit to export all open images
 
@@ -2532,7 +2533,7 @@ def export_icon_sizes(
     - output_dir: Directory to write icon files into
     - platform: "android" (default) or "ios"
     - source_image_index: Image to use as source (default 0)
-    - format: Output format — "png" (default)
+    - format: Output format — "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp"
 
     Returns: {exported: [{size, file_path}], count, platform}
     """
@@ -2564,7 +2565,7 @@ def export_web_optimized(
 
     Parameters:
     - output_dir: Directory to write output files
-    - jpeg_quality: JPEG quality 1-100 (default 85)
+    - jpeg_quality: JPEG quality 0-100 (default 85)
     - png_compression: PNG compression level 0-9 (default 9)
     - max_width / max_height: Optional scaling before export
     - image_index: Source image index (default 0)

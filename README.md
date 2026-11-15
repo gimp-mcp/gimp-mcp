@@ -327,7 +327,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | Tool | Description |
 |---|---|
 | `open_image` | Open image file |
-| `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `export_image` | Export to PNG, JPEG, WebP, TIFF, BMP |
 | `save_xcf` | Save as GIMP XCF (preserves layers and metadata) |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |

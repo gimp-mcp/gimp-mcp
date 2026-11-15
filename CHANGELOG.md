@@ -14,6 +14,12 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- `export_image`, `batch_export`, `export_web_optimized` and `export_icon_sizes` now write real
+  JPEG, WebP, TIFF and BMP files. They used GIMP 2 procedure names that GIMP 3 doesn't have, so
+  every export silently fell back to PNG data under a `.jpg`, `.webp`, `.tiff` or `.bmp` name,
+  and the `quality` setting was ignored. An unsupported format (e.g. `gif`), a quality outside
+  0–100 or a missing export procedure now returns an error. `tif` is accepted as an alias for
+  `tiff`.
 - `flatten_image`, `merge_visible_layers`, `batch_resize`, `new_canvas` and the export tools
   (`export_icon_sizes`, `export_web_optimized`, `export_social_media_kit`,
   `export_sprite_sheet`, and flattened exports) no longer report success when GIMP rejects a

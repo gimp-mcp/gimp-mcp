@@ -2053,57 +2053,62 @@ class MCPPlugin(Gimp.PlugIn):
             "none":   Gimp.InterpolationType.NONE,
         }.get(interp.lower(), Gimp.InterpolationType.CUBIC)
 
+    # GIMP 3 export procedures. The GIMP 2 file-*-save names don't exist in 3.x.
+    EXPORT_PROCS = {
+        "png":  "file-png-export",
+        "jpeg": "file-jpeg-export",
+        "jpg":  "file-jpeg-export",
+        "webp": "file-webp-export",
+        "tiff": "file-tiff-export",
+        "tif":  "file-tiff-export",
+        "bmp":  "file-bmp-export",
+    }
+
+    def _check_export_args(self, fmt, quality):
+        """Validate an export format and quality; return (format, procedure name).
+
+        Export tools call this before doing any work, so a bad format fails the
+        whole call instead of each image, and before writing any files.
+        """
+        fmt_lower = str(fmt).lower()
+        proc_name = self.EXPORT_PROCS.get(fmt_lower)
+        if proc_name is None:
+            supported = ", ".join(sorted(self.EXPORT_PROCS))
+            raise RuntimeError(f"Unsupported export format '{fmt}' (supported: {supported})")
+        if fmt_lower in ("jpeg", "jpg", "webp") and not 0 <= quality <= 100:
+            # GLib only warns about an out-of-range value and keeps the default.
+            raise RuntimeError(f"quality must be between 0 and 100, got {quality}")
+        return fmt_lower, proc_name
+
     def _export_to_path(self, image, file_path, fmt, quality, flatten):
-        """Export image to file_path in the given format. Returns file size in bytes."""
+        """Export image to file_path in the given format. Returns file size in bytes.
+
+        An unknown format or a missing export procedure raises, instead of
+        writing PNG data under the requested name (issue #64, item 5).
+        """
         from gi.repository import Gio
+        fmt_lower, proc_name = self._check_export_args(fmt, quality)
+        if not image.get_layers():
+            # Exporting an image without layers crashes GIMP's file plug-ins
+            # (reported in #63), and flatten() on it fails, so check first.
+            raise RuntimeError("Cannot export an image that has no layers")
         should_delete = False
         try:
             if flatten:
                 image = image.duplicate()
                 should_delete = True
                 self._check_item(image.flatten(), "Flattening the export copy")
-            gio_file = Gio.File.new_for_path(file_path)
-            pdb = Gimp.get_pdb()
-            fmt_lower = fmt.lower()
-            proc_name_map = {
-                "png":  "file-png-save",
-                "jpeg": "file-jpeg-save",
-                "jpg":  "file-jpeg-save",
-                "webp": "file-webp-save",
-                "tiff": "file-tiff-save",
-            }
-            proc_name = proc_name_map.get(fmt_lower, "file-png-save")
-            proc = pdb.lookup_procedure(proc_name)
-            if proc is None:
-                # Fallback: try generic file-png-export
-                proc = pdb.lookup_procedure("file-png-export")
-            if proc is None:
-                self._check_ok(Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file),
-                               "Saving the image")
-            else:
-                cfg = proc.create_config()
-                cfg.set_property("image", image)
-                cfg.set_property("file", gio_file)
-                try:
-                    layers = image.get_layers()
-                    drawable = (image.get_selected_layers() or layers or [None])[0]
-                    try:
-                        cfg.set_property("drawable", drawable)
-                    except Exception:
-                        pass
-                    if fmt_lower in ("jpeg", "jpg"):
-                        try:
-                            cfg.set_property("quality", quality / 100.0)
-                        except Exception:
-                            pass
-                    if fmt_lower == "webp":
-                        try:
-                            cfg.set_property("quality", float(quality))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                self._run_pdb(proc, cfg)
+            proc = self._lookup_pdb(proc_name)
+            cfg = proc.create_config()
+            cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+            cfg.set_property("image", image)
+            cfg.set_property("file", Gio.File.new_for_path(file_path))
+            # Quality ranges differ: file-jpeg-export takes 0-1, file-webp-export 0-100.
+            if fmt_lower in ("jpeg", "jpg"):
+                cfg.set_property("quality", quality / 100.0)
+            elif fmt_lower == "webp":
+                cfg.set_property("quality", float(quality))
+            self._run_pdb(proc, cfg)
             return os.path.getsize(file_path)
         finally:
             if should_delete:
@@ -2240,6 +2245,7 @@ class MCPPlugin(Gimp.PlugIn):
             quality      = int(params.get("quality", 90))
             name_pattern = params.get("name_pattern", "{name}")
             image_index  = params.get("image_index", None)
+            self._check_export_args(fmt, quality)
 
             images = Gimp.get_images()
             if not images:
@@ -4001,6 +4007,7 @@ class MCPPlugin(Gimp.PlugIn):
             platform_str = params.get("platform", "android").lower()
             src_index    = int(params.get("source_image_index", 0))
             fmt          = params.get("format", "png")
+            self._check_export_args(fmt, 95)
 
             ANDROID_SIZES = [
                 (48,  "mdpi"), (72, "hdpi"), (96, "xhdpi"),
@@ -4061,6 +4068,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_index   = int(params.get("image_index", 0))
             max_width     = params.get("max_width", None)
             max_height    = params.get("max_height", None)
+            self._check_export_args("jpeg", jpeg_quality)
             image = self._get_image(image_index)
             os.makedirs(output_dir, exist_ok=True)
 
