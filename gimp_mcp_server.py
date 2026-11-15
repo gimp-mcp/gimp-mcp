@@ -406,7 +406,8 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         - max_width, max_height: Optional scaling for the extracted region, at least 1
 
     The bitmap is the visible composite (hidden and 0%-opacity layers are left out,
-    blend modes and layer filters apply); an image with nothing visible returns an
+    blend modes and layer filters apply), as GIMP displays it: a visible channel,
+    including Quick Mask, tints it. An image with nothing visible returns an
     error. The user's selection and clipboard are not changed.
 
     Examples:
@@ -547,7 +548,8 @@ def get_state_snapshot(
 
     Returns:
     - RGBA PNG of the visible composite (hidden and 0%-opacity layers are left out,
-      blend modes and layer filters apply); an image with nothing visible returns an
+      blend modes and layer filters apply), as GIMP displays it: a visible channel,
+      including Quick Mask, tints it. An image with nothing visible returns an
       error. The user's selection and clipboard are not changed.
 
     Typical agent workflow:

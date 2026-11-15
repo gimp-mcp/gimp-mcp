@@ -17,7 +17,8 @@ right command when the versions differ.
 - `get_image_bitmap` and `get_state_snapshot` region snapshots show the visible image. They
   copied only the top layer, even when it was hidden, so they could show the wrong pixels. Both
   full and region snapshots now render the visible composite (blend modes, layer groups and
-  layer filters included), so a region matches the same rectangle of a full snapshot. Taking a
+  layer filters included), so a region matches the same rectangle of a full snapshot. As in
+  GIMP's canvas, a visible channel (including Quick Mask) tints the snapshot. Taking a
   snapshot no longer replaces your selection or clipboard. Snapshots are now always RGBA PNGs, also
   for grayscale and indexed images, and images above 8 bits per channel come back as 16-bit
   PNGs, with colours converted to sRGB (#17).
