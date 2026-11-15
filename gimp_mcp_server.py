@@ -1652,7 +1652,9 @@ def create_layer(
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
     - position: Stack position, counted from the top: 0 = top, 1 = second from the
       top, and so on; a value past the bottom puts the layer at the bottom.
-      -1 (default) = directly above the selected layer.
+      -1 (default) = directly above the selected layer (the highest one if several
+      are selected), inside its layer group if it is in one; if the selected layer
+      is a group, at the top inside that group.
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id, width, height, position}; position is the value
@@ -1816,7 +1818,8 @@ def reorder_layer(
 
     Parameters:
     - new_position: Target stack index, counted from the top: 0 = top, 1 = second
-      from the top, and so on
+      from the top, and so on; a value past the bottom moves the layer to the bottom,
+      and a negative value moves it to the top
     - layer_name / layer_index: Identify the layer (defaults to active layer)
     - image_index: Target image index (default 0)
 
