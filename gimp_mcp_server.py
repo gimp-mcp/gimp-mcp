@@ -2679,7 +2679,9 @@ def export_sprite_sheet(
 ) -> dict:
     """Combine multiple frames into a sprite sheet PNG with a transparent background.
 
-    Every cell has the size of the first frame; larger frames are cut to it.
+    Every cell has the size of the first frame; larger frames are cut to it. Each frame is
+    drawn at full opacity in Normal mode, with its mask and filters; hidden layers are made
+    visible and included.
 
     Parameters:
     - output_path: Absolute path for the output PNG file

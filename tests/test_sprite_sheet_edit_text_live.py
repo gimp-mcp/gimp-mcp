@@ -12,7 +12,11 @@
    text-layer frame and a group frame with a locked child export, and that a
    locked frame larger than its cell is clipped to it. A third sheet checks
    that a CLIP_TO_BACKDROP frame stays visible, that a live drop shadow is
-   cropped to its cell, and that a mask shown for editing isn't drawn.
+   drawn and cropped to its cell, that a mask shown for editing isn't drawn,
+   that a mask stays aligned with a frame whose filter reaches outside it,
+   and that a group child's mask shown for editing isn't drawn either.
+   Another sheet, exported first while no other images are open, checks
+   source="images".
 2. edit_text passed the font name as a string, but gimp-text-layer-set-font
    takes a Gimp.Font, so changing the font always failed. The test changes a
    text layer's font and checks the reported and the applied font.
@@ -211,11 +215,12 @@ def check_sprite_sheet_mixed_frames(tmpdir):
     - a red 30x20 layer, which sets the cell size;
     - a blue 60x40 layer with content and position locks. It would spill past
       its cell into the padding, and it's in the middle so a spill would land
-      on the canvas. The copy inherits the locks, which would block clipping.
-    - a text layer. Gimp.TextLayer.resize() hides the 4-argument
-      Layer.resize(), which made a text frame fail the whole export.
+      on the canvas. The copy inherits the locks, which would block moving it
+      to the frame's origin.
+    - a text layer, a layer subclass with its own methods (it once broke the
+      export through TextLayer.resize()).
     - a group whose lime child has content and position locks. Unlocking the
-      group copy doesn't unlock the child, so the copy must be merged.
+      group copy doesn't unlock the child, which would block moving the group.
     """
     # Each layer is inserted at the top, so insert the bottom frame first.
     py("from gi.repository import Gimp, Gegl")
@@ -281,6 +286,34 @@ def check_sprite_sheet_mixed_frames(tmpdir):
           "clipped to its cell, source locks unchanged")
 
 
+def drop_shadow(var, dx):
+    """Lines that add a live, hard-edged drop shadow dx px to the side of layer `var`."""
+    return [
+        f"_t64_sf = Gimp.DrawableFilter.new({var}, 'gegl:dropshadow', 'shadow')",
+        "_t64_cfg = _t64_sf.get_config()",
+        f"_t64_cfg.set_property('x', {float(dx)})",
+        "_t64_cfg.set_property('y', 0.0)",
+        "_t64_cfg.set_property('radius', 0.0)",
+        "_t64_cfg.set_property('opacity', 2.0)",
+        "_t64_sf.update()",
+        f"{var}.append_filter(_t64_sf)",
+    ]
+
+
+def fill_rect(var, x, y, w, h, color):
+    """Lines that fill a rectangle of drawable `var` in image _t64_fx with a color."""
+    return [
+        f"_t64_fx.select_rectangle(Gimp.ChannelOps.REPLACE, {x}, {y}, {w}, {h})",
+        f"Gimp.context_set_foreground(Gegl.Color.new('{color}'))",
+        f"{var}.edit_fill(Gimp.FillType.FOREGROUND)",
+        "Gimp.Selection.none(_t64_fx)",
+    ]
+
+
+SHADOW_DX = -12   # the drop shadow's offset, to the left
+SHADOW_FILL_X = 8  # the shadowed frame is blue from here to its right edge
+
+
 def check_sprite_sheet_frame_effects(tmpdir):
     """Composite mode and live filters must not leak from a source frame.
 
@@ -291,20 +324,35 @@ def check_sprite_sheet_frame_effects(tmpdir):
     - a lime layer in NORMAL mode with composite mode CLIP_TO_BACKDROP. Resetting
       the mode to NORMAL keeps that composite mode, which would make the frame
       invisible on the transparent sheet.
-    - a blue layer with a live drop shadow 12 px to the left, which would draw
-      into the padding before its cell unless the filter is merged before the
-      crop. Its left and right edges must stay blue, so the merge, which grows
-      the layer to the left, must not move the frame's origin.
+    - a layer that is blue from x=8 to its right edge, with a live drop shadow
+      12 px to the left. The shadow must be drawn in the empty part of its
+      cell (x=0-7), so a dropped filter fails, and must not spill into the
+      padding before the cell. The blue must start at x=8, so the frame
+      doesn't move in its cell.
     - a yellow layer whose white mask is shown for editing (Alt-click). The
       copy keeps that setting, which would draw the mask instead of the frame.
+    - a blue layer whose mask is white on its left half, with the same left
+      shadow. The mask must stay aligned with the pixels: the shadow reaches
+      outside the layer, but only the left half may be visible.
+    - a group whose yellow child has a white mask shown for editing. Hiding
+      the mask only on the group copy would still draw the child's mask.
     """
     py("from gi.repository import Gimp, Gegl")
     py_in_context(
         f"_t64_fx = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
         "Gimp.context_set_opacity(100.0)",
         "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
-        *[line for name, color in (('masked', 'yellow'), ('shadowed', 'blue'),
-                                   ('clipped', 'lime'), ('red', 'red'))
+        "_t64_mgroup = Gimp.GroupLayer.new(_t64_fx, 'mask group')",
+        "_t64_fx.insert_layer(_t64_mgroup, None, 0)",
+        f"_t64_mchild = Gimp.Layer.new(_t64_fx, 'mask child', {FRAME_W}, {FRAME_H}, "
+        "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_fx.insert_layer(_t64_mchild, _t64_mgroup, 0)",
+        "Gimp.context_set_foreground(Gegl.Color.new('yellow'))",
+        "_t64_mchild.edit_fill(Gimp.FillType.FOREGROUND)",
+        "_t64_mchild.add_mask(_t64_mchild.create_mask(Gimp.AddMaskType.WHITE))",
+        "_t64_mchild.set_show_mask(True)",
+        *[line for name, color in (('halfmask', 'blue'), ('masked', 'yellow'),
+                                   ('shadowed', 'blue'), ('clipped', 'lime'), ('red', 'red'))
           for line in (
               f"_t64_l = Gimp.Layer.new(_t64_fx, '{name}', {FRAME_W}, {FRAME_H}, "
               "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
@@ -318,18 +366,18 @@ def check_sprite_sheet_frame_effects(tmpdir):
         "_t64_masked.set_show_mask(True)",
         "_t64_red.set_blend_space(Gimp.LayerColorSpace.RGB_PERCEPTUAL)",
         "_t64_red.set_composite_space(Gimp.LayerColorSpace.RGB_LINEAR)",
-        "_t64_sf = Gimp.DrawableFilter.new(_t64_shadowed, 'gegl:dropshadow', 'shadow')",
-        "_t64_cfg = _t64_sf.get_config()",
-        "_t64_cfg.set_property('x', -12.0)",
-        "_t64_cfg.set_property('y', 0.0)",
-        "_t64_cfg.set_property('radius', 0.0)",
-        "_t64_cfg.set_property('opacity', 2.0)",
-        "_t64_sf.update()",
-        "_t64_shadowed.append_filter(_t64_sf)",
+        # Leave x=0-7 of the shadowed frame empty for its shadow to land on.
+        "_t64_shadowed.edit_fill(Gimp.FillType.TRANSPARENT)",
+        *fill_rect('_t64_shadowed', SHADOW_FILL_X, 0, FRAME_W - SHADOW_FILL_X, FRAME_H, 'blue'),
+        *drop_shadow('_t64_shadowed', SHADOW_DX),
+        "_t64_hm = _t64_halfmask.create_mask(Gimp.AddMaskType.BLACK)",
+        "_t64_halfmask.add_mask(_t64_hm)",
+        *fill_rect('_t64_hm', 0, 0, FRAME_W // 2, FRAME_H, 'white'),
+        *drop_shadow('_t64_halfmask', SHADOW_DX),
     )
     out_path = os.path.join(tmpdir, 'effects.png')
     r = cmd('export_sprite_sheet', {
-        'output_path': out_path, 'columns': 4, 'padding': PADDING,
+        'output_path': out_path, 'columns': 6, 'padding': PADDING,
         'source': 'layers', 'image_index': image_index('_t64_fx'),
     })
     print(f"export_sprite_sheet (composite mode and live filter): {json.dumps(r)[:300]}")
@@ -337,25 +385,101 @@ def check_sprite_sheet_frame_effects(tmpdir):
         fail(f"export_sprite_sheet with a filtered frame failed: {r.get('error', r)}")
 
     cell = FRAME_W + PADDING
-    points = [(FRAME_W // 2, FRAME_H // 2),                 # frame with non-AUTO spaces
-              (cell + FRAME_W // 2, FRAME_H // 2),          # clip-to-backdrop frame
-              (2 * cell - PADDING // 2, FRAME_H // 2),       # gap before the shadowed frame
-              (2 * cell, FRAME_H // 2),                      # its left edge
-              (2 * cell + FRAME_W - 1, FRAME_H // 2),        # its right edge
-              (3 * cell + FRAME_W // 2, FRAME_H // 2)]       # frame with a shown mask
-    red, clipped, gap, left, right, masked = sample(out_path, points)
+    y = FRAME_H // 2
+    shadowed_x, halfmask_x = 2 * cell, 4 * cell
+    # The half-masked frame's visible half ends at FRAME_W // 2.
+    halfmask_cols = [1, 5, 10, FRAME_W // 2 - 1, FRAME_W // 2 + 1, FRAME_W - 5]
+    points = [(FRAME_W // 2, y),                               # frame with non-AUTO spaces
+              (cell + FRAME_W // 2, y),                        # clip-to-backdrop frame
+              (shadowed_x - PADDING // 2, y),                  # gap before the shadowed frame
+              (shadowed_x + SHADOW_FILL_X // 2, y),            # its shadow, inside its cell
+              (shadowed_x + SHADOW_FILL_X, y),                 # where its blue starts
+              (shadowed_x + FRAME_W - 1, y),                   # its right edge
+              (3 * cell + FRAME_W // 2, y),                    # frame with a shown mask
+              (5 * cell + FRAME_W // 2, y),                    # group child with a shown mask
+              *[(halfmask_x + c, y) for c in halfmask_cols]]   # half-masked frame
+    red, clipped, gap, shadow, left, right, masked, child_masked, *halfmask = sample(out_path, points)
     if red != [1.0, 0.0, 0.0, 1.0]:
         fail(f"frame with non-AUTO blend/composite spaces should be red, got RGBA {red}")
     if clipped != [0.0, 1.0, 0.0, 1.0]:
         fail(f"CLIP_TO_BACKDROP frame should be opaque lime, got RGBA {clipped}")
     if gap[3] != 0.0:
         fail(f"drop shadow leaked into the padding before its cell: RGBA {gap}")
+    if shadow[3] == 0.0 or shadow[:3] != [0.0, 0.0, 0.0]:
+        fail(f"drop shadow should be drawn inside its cell, got RGBA {shadow} (filter dropped?)")
     if left != [0.0, 0.0, 1.0, 1.0] or right != [0.0, 0.0, 1.0, 1.0]:
-        fail(f"shadowed frame moved in its cell: left edge {left}, right edge {right}")
+        fail(f"shadowed frame moved in its cell: blue at x={SHADOW_FILL_X} {left}, "
+             f"right edge {right}")
     if masked != [1.0, 1.0, 0.0, 1.0]:
         fail(f"frame with a shown mask should be yellow, got RGBA {masked} (the mask was drawn)")
-    print("PASS: CLIP_TO_BACKDROP frame visible, live drop shadow cropped to its cell, "
-          "shown mask not drawn")
+    if child_masked != [1.0, 1.0, 0.0, 1.0]:
+        fail(f"group whose child shows its mask should be yellow, got RGBA {child_masked} "
+             "(the child's mask was drawn)")
+    alphas = [px[3] for px in halfmask]
+    if alphas != [1.0, 1.0, 1.0, 1.0, 0.0, 0.0]:
+        fail(f"half-masked frame should be visible left of x={FRAME_W // 2} and transparent "
+             f"right of it; alpha at x={halfmask_cols}: {alphas} (mask shifted?)")
+    print("PASS: CLIP_TO_BACKDROP frame visible, live drop shadow drawn and cropped to its "
+          "cell, shown masks not drawn (layer and group child), mask stays aligned with a "
+          "filtered frame")
+
+
+def check_sprite_sheet_from_images(tmpdir):
+    """With source="images", each image's top layer keeps its place on its canvas.
+
+    source="images" uses every open image, so this runs only when GIMP has no
+    other images open; otherwise it is skipped. Images, newest (first frame)
+    first:
+    - a 30x20 image whose 50x50 blue layer sits at (10, 5): the frame shows the
+      layer from (10, 5) on, clipped to the cell;
+    - a 30x20 image filled red by an RGB layer without alpha.
+    """
+    if py("print(len(Gimp.get_images()))") != "0":
+        print("SKIP: source='images' check needs GIMP with no images open")
+        return
+    py("from gi.repository import Gimp, Gegl")
+    py_in_context(
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        f"_t64_img_red = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
+        f"_t64_l = Gimp.Layer.new(_t64_img_red, 'red', {FRAME_W}, {FRAME_H}, "
+        "Gimp.ImageType.RGB_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_img_red.insert_layer(_t64_l, None, 0)",
+        "Gimp.context_set_foreground(Gegl.Color.new('red'))",
+        "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+        f"_t64_img_off = Gimp.Image.new({FRAME_W}, {FRAME_H}, Gimp.ImageBaseType.RGB)",
+        "_t64_l = Gimp.Layer.new(_t64_img_off, 'offset', 50, 50, "
+        "Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_t64_img_off.insert_layer(_t64_l, None, 0)",
+        "_t64_l.set_offsets(10, 5)",
+        "Gimp.context_set_foreground(Gegl.Color.new('blue'))",
+        "_t64_l.edit_fill(Gimp.FillType.FOREGROUND)",
+    )
+    out_path = os.path.join(tmpdir, 'images.png')
+    r = cmd('export_sprite_sheet', {'output_path': out_path, 'columns': 2,
+                                    'padding': PADDING, 'source': 'images'})
+    print(f"export_sprite_sheet (source=images): {json.dumps(r)[:300]}")
+    if r.get('status') != 'success':
+        fail(f"export_sprite_sheet with source='images' failed: {r.get('error', r)}")
+    if r['results'].get('count') != 2:
+        fail(f"expected 2 frames from the 2 open images, got {r['results'].get('count')}")
+    cell = FRAME_W + PADDING
+    points = [(5, 2),                               # offset frame, left of and above its layer
+              (12, 7),                              # inside its layer
+              (FRAME_W - 1, FRAME_H - 1),           # its last pixel, still inside the layer
+              (FRAME_W + PADDING // 2, FRAME_H - 1),  # gap after it: the layer is clipped
+              (cell + FRAME_W // 2, FRAME_H // 2)]  # red frame
+    outside, inside, corner, gap, red = sample(out_path, points)
+    if outside[3] != 0.0:
+        fail(f"offset frame lost its position: (5, 2) should be transparent, got RGBA {outside}")
+    if inside != [0.0, 0.0, 1.0, 1.0] or corner != [0.0, 0.0, 1.0, 1.0]:
+        fail(f"offset frame should be blue from (10, 5) to its cell's edge, got {inside} and {corner}")
+    if gap[3] != 0.0:
+        fail(f"offset frame spilled into the padding: RGBA {gap}")
+    if red != [1.0, 0.0, 0.0, 1.0]:
+        fail(f"second frame should be red, got RGBA {red}")
+    py("_t64_img_off.delete()", "_t64_img_red.delete()")
+    print("PASS: source='images' keeps each layer's position on its canvas and clips it to the cell")
 
 
 def check_edit_text_font():
@@ -389,6 +513,8 @@ def check_edit_text_font():
 def main():
     tmpdir = tempfile.mkdtemp(prefix='gimp-mcp-64-')
     try:
+        # First, while no test images are open: it exports every open image.
+        check_sprite_sheet_from_images(tmpdir)
         check_sprite_sheet(tmpdir)
         check_sprite_sheet_mixed_frames(tmpdir)
         check_sprite_sheet_frame_effects(tmpdir)
@@ -396,7 +522,8 @@ def main():
         return 0
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        for var in ('_t64_frames', '_t64_mixed', '_t64_fx', '_t64_text', '_t64_load'):
+        for var in ('_t64_img_off', '_t64_img_red', '_t64_frames', '_t64_mixed', '_t64_fx',
+                    '_t64_text', '_t64_load'):
             try:
                 py(f"if '{var}' in globals() and {var}.is_valid(): {var}.delete()")
             except SystemExit:
