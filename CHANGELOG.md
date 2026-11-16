@@ -26,6 +26,13 @@ right command when the versions differ.
 ### Fixed
 - `create_layer` rejects width or height outside 1–524288 with an error naming the
   dimension and value. Zero no longer silently uses the image size (#135).
+- `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on
+  GIMP 3.2 builds that lack the Gauss blur plug-in. It now falls back to the
+  `gegl:gaussian-blur` operation, the same fallback `blur` already uses.
+- `fill_selection` no longer clears or fills the entire layer when no selection is active. GIMP
+  applies an edit-clear or edit-fill with no selection to the whole layer, so a leftover empty
+  selection silently destroyed image content while the tool reported success. An empty selection
+  now returns an error pointing to `fill_layer` for whole-layer fills.
 - The `create_layer` and `reorder_layer` docs said position 0 is the bottom of the layer stack.
   In GIMP it is the top, so asking for the bottom put the layer on top. The docs now match
   GIMP: positions count from the top, and `create_layer`'s default -1 means directly above
