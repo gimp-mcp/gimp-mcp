@@ -3104,8 +3104,15 @@ class MCPPlugin(Gimp.PlugIn):
                         "error": f"position must be -1 (above the selected layer) "
                                  f"or >= 0 (0 = top), got {position}"}
             image = self._get_image(image_index)
-            width  = int(params.get("width")  or image.get_width())
-            height = int(params.get("height") or image.get_height())
+            width  = params.get("width")
+            height = params.get("height")
+            width  = int(image.get_width() if width is None else width)
+            height = int(image.get_height() if height is None else height)
+            for dimension, value in (("width", width), ("height", height)):
+                if not 1 <= value <= Gimp.MAX_IMAGE_SIZE:
+                    return {"status": "error",
+                            "error": f"{dimension} must be between 1 and "
+                                     f"{Gimp.MAX_IMAGE_SIZE}, got {value}"}
             mode   = self._blend_mode_from_string(blend_mode)
             # The layer type must match the image's base type, or GIMP refuses the insert.
             layer_type = {

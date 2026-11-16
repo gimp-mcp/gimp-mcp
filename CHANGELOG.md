@@ -24,6 +24,8 @@ right command when the versions differ.
   the selection (#130).
 
 ### Fixed
+- `create_layer` rejects width or height outside 1–524288 with an error naming the
+  dimension and value. Zero no longer silently uses the image size (#135).
 - The `create_layer` and `reorder_layer` docs said position 0 is the bottom of the layer stack.
   In GIMP it is the top, so asking for the bottom put the layer on top. The docs now match
   GIMP: positions count from the top, and `create_layer`'s default -1 means directly above
