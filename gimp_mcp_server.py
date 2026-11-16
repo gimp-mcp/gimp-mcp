@@ -777,7 +777,7 @@ def open_image_as_layer(
     of opaque full-size frames, that looks like the last frame); multi-page files
     may behave the same way. The new layer becomes the selected layer, so tools
     that default to the selected layer act on it. If the image has a floating
-    selection (only call_api code makes one), anchor it first, with call_api:
+    selection (a user can make one in GIMP), anchor it first, with call_api:
     Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
     isn't selected, and position 0 puts it second from the top (the result reports
     the real position).
