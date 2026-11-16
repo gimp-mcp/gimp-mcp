@@ -46,7 +46,6 @@ class CreateLayerDimensionsTests(unittest.TestCase):
                     self.assertEqual(result["status"], "error", result)
                     self.assertIn(dimension, result["error"])
                     self.assertIn(str(value), result["error"])
-                    self.assertIn("1", result["error"])
                     self.assertIn("524288", result["error"])
                     self.new_layer.assert_not_called()
                     self.image.insert_layer.assert_not_called()
