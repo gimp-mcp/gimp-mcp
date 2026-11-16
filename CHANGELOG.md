@@ -19,11 +19,23 @@ right command when the versions differ.
   transparency kept. The layer can be scaled to fit the canvas or stretched to its size,
   and is centered unless offsets are given. Based on #61 by @kabachuha.
 
+### Changed
+- `create_layer`'s `fill` covers the whole layer. With a selection active, it used to fill only
+  the selection (#130).
+
 ### Fixed
 - The `create_layer` and `reorder_layer` docs said position 0 is the bottom of the layer stack.
   In GIMP it is the top, so asking for the bottom put the layer on top. The docs now match
   GIMP: positions count from the top, and `create_layer`'s default -1 means directly above
   the selected layer (#129).
+- `create_layer` reports where the layer landed, not the position it was given: with the default
+  -1, or with a floating selection in the image, the two differ. A new `parent` field names the
+  layer group it went into, if any (#130).
+- `create_layer` works on indexed images. It used to fail with an error about a gray layer (#130).
+- `create_layer` and `reorder_layer` no longer report success when GIMP refuses to insert or
+  move the layer. They return GIMP's error and leave the image unchanged (#130).
+- `create_layer` rejects positions below -1. GIMP read them as "above the selected layer, but
+  never inside a group" (#130).
 - `add_text` no longer replaces an unknown font silently. Its default font is now `Sans-serif`, and
   its result reports `font` (the applied font), `requested_font` when it differs from `font`, and a
   `warning` naming both fonts when a default font was substituted (#124).

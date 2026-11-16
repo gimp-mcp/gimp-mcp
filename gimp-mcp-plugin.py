@@ -3097,33 +3097,50 @@ class MCPPlugin(Gimp.PlugIn):
             blend_mode  = params.get("blend_mode", "NORMAL")
             position    = int(params.get("position", -1))
             fill        = params.get("fill", "transparent")
+            # GIMP treats any value below -1 as "above the selected layer, but never
+            # inside a group", which no client would guess, so allow only -1.
+            if position < -1:
+                return {"status": "error",
+                        "error": f"position must be -1 (above the selected layer) "
+                                 f"or >= 0 (0 = top), got {position}"}
             image = self._get_image(image_index)
             width  = int(params.get("width")  or image.get_width())
             height = int(params.get("height") or image.get_height())
             mode   = self._blend_mode_from_string(blend_mode)
-            # Determine layer type
-            base_type  = image.get_base_type()
-            layer_type = Gimp.ImageType.RGBA_IMAGE if base_type == Gimp.ImageBaseType.RGB else Gimp.ImageType.GRAYA_IMAGE
-            image.undo_group_start()
+            # The layer type must match the image's base type, or GIMP refuses the insert.
+            layer_type = {
+                Gimp.ImageBaseType.RGB:     Gimp.ImageType.RGBA_IMAGE,
+                Gimp.ImageBaseType.GRAY:    Gimp.ImageType.GRAYA_IMAGE,
+                Gimp.ImageBaseType.INDEXED: Gimp.ImageType.INDEXEDA_IMAGE,
+            }[image.get_base_type()]
+            # The layer is filled before it is inserted, so insert_layer() is the only
+            # change to the image: a failure leaves it untouched (no undo step, not
+            # marked dirty). Drawable.fill works on a layer not yet in an image, fills
+            # all of it whatever the selection, and ignores the context's opacity and
+            # paint mode.
+            layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
             try:
-                layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
-                image.insert_layer(layer, None, position)
-                self._push_paint_context()
-                try:
-                    if fill.lower() == "transparent":
-                        layer.add_alpha()
-                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT),
-                                       "Filling the new layer")
-                    else:
-                        bg = Gegl.Color.new(fill)
+                if fill.lower() == "transparent":
+                    self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new layer")
+                else:
+                    bg = Gegl.Color.new(fill)
+                    Gimp.context_push()
+                    try:
                         Gimp.context_set_background(bg)
-                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND),
+                        self._check_ok(layer.fill(Gimp.FillType.BACKGROUND),
                                        "Filling the new layer")
-                finally:
-                    Gimp.context_pop()
-            finally:
-                image.undo_group_end()
+                    finally:
+                        Gimp.context_pop()
+                self._check_ok(image.insert_layer(layer, None, position), "Inserting the layer")
+            except Exception:
+                # A layer that never made it into the image belongs to none; free it.
+                try:
+                    layer.delete()
+                except Exception:
+                    pass
+                raise
             Gimp.displays_flush()
+            parent = layer.get_parent()
             return {
                 "status": "success",
                 "results": {
@@ -3131,7 +3148,12 @@ class MCPPlugin(Gimp.PlugIn):
                     "layer_id":   layer.get_id(),
                     "width":      width,
                     "height":     height,
-                    "position":   position,
+                    # Where the layer landed, which can differ from the request: -1
+                    # depends on the selection, and a floating selection stays on top.
+                    "position":   image.get_item_position(layer),
+                    # -1 can put the layer inside a group; then position is its index
+                    # in that group. GIMP keeps item names unique within an image.
+                    "parent":     parent.get_name() if parent else None,
                 }
             }
         except Exception as e:
@@ -3234,11 +3256,9 @@ class MCPPlugin(Gimp.PlugIn):
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
-            image.undo_group_start()
-            try:
-                image.reorder_item(layer, None, new_position)
-            finally:
-                image.undo_group_end()
+            # One call, so one undo step without an undo group; an empty group
+            # would mark the image dirty when GIMP refuses the move.
+            self._check_ok(image.reorder_item(layer, None, new_position), "Moving the layer")
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
