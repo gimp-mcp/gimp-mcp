@@ -20,6 +20,10 @@ right command when the versions differ.
   and is centered unless offsets are given. Based on #61 by @kabachuha.
 
 ### Fixed
+- The `create_layer` and `reorder_layer` docs said position 0 is the bottom of the layer stack.
+  In GIMP it is the top, so asking for the bottom put the layer on top. The docs now match
+  GIMP: positions count from the top, and `create_layer`'s default -1 means directly above
+  the selected layer (#129).
 - `export_sprite_sheet` works on GIMP 3. It failed every time with
   `ImageBaseType has no attribute 'RGBA'`, and the sheet now keeps its transparent background
   instead of being flattened (#64).

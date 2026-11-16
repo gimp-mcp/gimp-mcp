@@ -1720,10 +1720,23 @@ def create_layer(
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
-    - position: Stack position — -1 = top (default), 0 = bottom
+    - position: 0 or more = index among the image's top-level layers, counted from
+      the top (0 = top); a value past the bottom puts the layer at the bottom.
+      -1 (default) = directly above the selected layer, inside its group if it is in
+      one; if a group is selected, at the top inside it. With several selected:
+      above the highest if they are non-group layers with the same parent; at the
+      top inside a selected group if the others are non-group layers directly
+      inside it; otherwise, or with nothing selected, at the top of the image.
+      Don't pass other negative values. Prefer 0 or more: other tools can't find a
+      layer inside a group by layer_name.
+      The new layer becomes the selected layer. If the image has a floating
+      selection (a user can make one in GIMP), anchor it first, with call_api:
+      Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+      isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, width, height, position}
+    Returns: {layer_name, layer_id, width, height, position}; position is the value
+    passed in, not the layer's resulting index
     """
     try:
         conn = get_gimp_connection()
@@ -1882,8 +1895,18 @@ def reorder_layer(
     """Move a layer to a new stack position.
 
     Parameters:
-    - new_position: Target stack index (0 = bottom)
-    - layer_name / layer_index: Identify the layer (defaults to active layer)
+    - new_position: Target stack index among the image's top-level layers, counted
+      from the top: 0 = top, 1 = second from the top, and so on; a value past the
+      bottom moves the layer to the bottom, and a negative value moves it to the top.
+      A layer inside a layer group is moved out of the group.
+    - layer_name / layer_index: Identify the layer (defaults to the selected layer;
+      if several are selected, any one of them, so select only one). Both find only
+      top-level layers. To move a grouped layer, select it and leave both out, e.g.
+      via call_api: image.set_selected_layers([layer]). A layer just made by
+      create_layer is already selected. But while the image has a floating
+      selection, that is always the selected layer, so leaving both out moves it.
+      Anchor it before calling create_layer: anchoring afterwards selects the layer
+      it was pasted on, not the new one.
     - image_index: Target image index (default 0)
 
     Returns status dict.
