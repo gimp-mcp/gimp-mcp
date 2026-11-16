@@ -2221,12 +2221,22 @@ class MCPPlugin(Gimp.PlugIn):
             offset_x = params.get("offset_x")
             offset_y = params.get("offset_y")
 
+            # A relative path would resolve against GIMP's working directory, which
+            # the client can't know. (The MCP server expands "~": GIMP's own home
+            # can differ, e.g. a Snap GIMP's.)
+            if not os.path.isabs(file_path):
+                return {"status": "error",
+                        "error": f"file_path must be an absolute path, got '{file_path}'"}
+            if os.path.isdir(file_path):
+                return {"status": "error",
+                        "error": f"{file_path} is a directory, not an image file"}
             # GIMP's own error for a missing file is cryptic ("... out of range").
             if not os.path.isfile(file_path):
                 return {"status": "error", "error": f"File not found: {file_path}"}
             # Resolve the target before loading: Gimp.get_images() lists the
             # newest image first, so the temporary image would shift the indices.
             target = self._get_image(image_index)
+            canvas_w, canvas_h = target.get_width(), target.get_height()
             loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(file_path))
             # GIMP returns None for a missing file and for one it can't read;
             # _check_item adds GIMP's own error message, which tells them apart.
@@ -2234,12 +2244,15 @@ class MCPPlugin(Gimp.PlugIn):
             # Everything up to insert_layer() works on the temporary image or on a
             # layer that isn't in the target yet, so a failure leaves the target
             # untouched: no layer, no undo step, not marked dirty.
-            canvas_w, canvas_h = target.get_width(), target.get_height()
             layer = None
             inserted = False
             try:
                 try:
                     src_w, src_h = loaded.get_width(), loaded.get_height()
+                    if scale != "none" and loaded.get_base_type() == Gimp.ImageBaseType.INDEXED:
+                        # GIMP never interpolates indexed images, so scaling one as
+                        # it is gives hard, blocky edges.
+                        self._check_ok(loaded.convert_rgb(), "Converting the image to RGB")
                     if scale == "fit":
                         factor = min(canvas_w / src_w, canvas_h / src_h)
                         self._check_ok(loaded.scale(max(1, round(src_w * factor)),

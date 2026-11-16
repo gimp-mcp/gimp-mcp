@@ -16,8 +16,8 @@ right command when the versions differ.
 ### Added
 - `open_image_as_layer` imports an image file as a new layer in an open image, without
   opening it in its own window. A multi-layer file is merged into one layer with its
-  transparency kept. The layer can be scaled to fit or fill the canvas, and is centered unless offsets
-  are given. Based on #61 by @kabachuha.
+  transparency kept. The layer can be scaled to fit the canvas or stretched to its size,
+  and is centered unless offsets are given. Based on #61 by @kabachuha.
 
 ### Fixed
 - `export_sprite_sheet` works on GIMP 3. It failed every time with

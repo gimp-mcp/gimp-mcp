@@ -772,10 +772,14 @@ def open_image_as_layer(
     content always becomes one new layer: a multi-layer file (XCF, PSD, ORA) is
     merged, and transparency is kept. The layer is converted to the image's color
     mode; in an indexed image its colors are reduced to that image's palette, so
-    convert the image to RGB first to keep them.
+    convert the image to RGB first to keep them. An animated GIF loads its frames
+    as stacked layers, so only the top one (the last frame) is imported; multi-page
+    files may behave the same way. The new layer becomes the selected layer, so
+    tools that default to the selected layer act on it.
 
     Parameters:
-    - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.)
+    - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.);
+      a leading "~" is expanded. Relative paths are rejected.
     - image_index: Index of the image to add the layer to (default 0)
     - layer_name: Name for the new layer (default: the file name without extension).
       GIMP adds a suffix such as " #1" if the name is taken; the result has the real name.
@@ -796,7 +800,8 @@ def open_image_as_layer(
     try:
         conn = get_gimp_connection()
         result = conn.send_command("open_image_as_layer", {
-            "file_path": file_path,
+            # Expanded here: a Snap GIMP's own home directory is not the user's.
+            "file_path": os.path.expanduser(file_path),
             "image_index": image_index,
             "layer_name": layer_name,
             "position": position,

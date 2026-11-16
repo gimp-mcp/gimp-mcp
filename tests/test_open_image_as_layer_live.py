@@ -6,9 +6,10 @@ layer, a blue square in a smaller, offset layer), and a 200x150 target image
 with three layers. It then imports the XCF in several ways and checks the
 new layer: transparency kept (with a lime background color in the context,
 which a flatten would leak in), content kept where it sits on the source
-canvas, size and offsets for each scale mode, stack position, the reported
-values, no temporary image left open, and errors (including a GIMP call failing
-mid-import) leaving the target unchanged and not marked dirty.
+canvas, size and offsets for each scale mode, an indexed source scaled smoothly,
+stack position, the reported values, no temporary image left open, and errors
+(bad paths, a file that isn't an image, a GIMP call failing mid-import) leaving
+the target unchanged and not marked dirty.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). The XCF goes under ~/tmp, because a Snap GIMP has a
@@ -24,7 +25,7 @@ import tempfile
 HOST, PORT = '127.0.0.1', int(os.environ.get('GIMP_MCP_PORT', 9877))
 TMP_ROOT = os.path.join(os.path.expanduser('~'), 'tmp')
 # make_source() sets these to a fresh directory, so no earlier file is reused or deleted.
-SRC_DIR = SRC = None
+SRC_DIR = SRC = SRC_INDEXED = NOT_AN_IMAGE = None
 
 
 def send(msg, timeout=60):
@@ -101,11 +102,14 @@ def import_layer(**params):
 
 
 def make_source():
-    """Save a 100x80 two-layer XCF: red 20x20 at (10,10), blue 30x30 layer at (60,40)."""
-    global SRC_DIR, SRC
+    """Write the source files: a 100x80 two-layer XCF (red 20x20 at (10,10), blue
+    30x30 layer at (60,40)), a 10x10 indexed XCF, and a file that is not an image."""
+    global SRC_DIR, SRC, SRC_INDEXED, NOT_AN_IMAGE
     os.makedirs(TMP_ROOT, exist_ok=True)
     SRC_DIR = tempfile.mkdtemp(prefix='gimp-mcp-as-layer-', dir=TMP_ROOT)
     SRC = os.path.join(SRC_DIR, 'as_layer_src.xcf')
+    SRC_INDEXED = os.path.join(SRC_DIR, 'as_layer_indexed.xcf')
+    NOT_AN_IMAGE = os.path.join(SRC_DIR, 'notes.png')
     saved = py(
         "import json",
         "from gi.repository import Gimp, Gegl, Gio",
@@ -131,6 +135,35 @@ def make_source():
         "print(_ok)",
     )
     check(saved == 'True' and os.path.exists(SRC), "source XCF was not written", (saved, SRC))
+    # A 10x10 indexed image, black left half and white right half.
+    saved = py(
+        "_ix = Gimp.Image.new(10, 10, Gimp.ImageBaseType.RGB)",
+        "_il = Gimp.Layer.new(_ix, 'bw', 10, 10, Gimp.ImageType.RGB_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+        "_ix.insert_layer(_il, None, 0)",
+        "Gimp.context_push()",
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        "Gimp.context_set_feather(False)",
+        "Gimp.context_set_foreground(Gegl.Color.new('rgb(1.0, 1.0, 1.0)'))",
+        "_il.edit_fill(Gimp.FillType.FOREGROUND)",
+        "_ix.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, 5, 10)",
+        "Gimp.context_set_foreground(Gegl.Color.new('rgb(0.0, 0.0, 0.0)'))",
+        "_il.edit_fill(Gimp.FillType.FOREGROUND)",
+        "Gimp.Selection.none(_ix)",
+        "Gimp.context_pop()",
+        "_ok = _ix.convert_indexed(Gimp.ConvertDitherType.NONE, Gimp.ConvertPaletteType.MONO, "
+        "2, False, False, '')",
+        f"_ok = _ok and Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, _ix, "
+        f"Gio.File.new_for_path({SRC_INDEXED!r}), None)",
+        "_ix.delete()",
+        "print(_ok)",
+    )
+    check(saved == 'True' and os.path.exists(SRC_INDEXED), "indexed source XCF was not written",
+          (saved, SRC_INDEXED))
+    # A file that exists but isn't an image.
+    with open(NOT_AN_IMAGE, 'w') as f:
+        f.write("not an image\n")
+
 
 
 def make_target():
@@ -146,15 +179,20 @@ def make_target():
 
 
 def main():
-    made_target = saved_bg = False
+    made_target = saved_context = False
+    stubbed = None  # the libgimp method replaced by a failing stub, until restored
     try:
         make_source()
         make_target()
         made_target = True
-        # A flatten would fill transparent areas with this color.
+        # A flatten would fill transparent areas with this background color.
+        # Cubic interpolation, so the indexed-scaling check doesn't depend on the
+        # user's setting.
         py("_aslayer_bg = Gimp.context_get_background()",
-           "Gimp.context_set_background(Gegl.Color.new('lime'))")
-        saved_bg = True
+           "_aslayer_interp = Gimp.context_get_interpolation()",
+           "Gimp.context_set_background(Gegl.Color.new('lime'))",
+           "Gimp.context_set_interpolation(Gimp.InterpolationType.CUBIC)")
+        saved_context = True
         count = image_count()
 
         # Default: file's size, centered, on top (not above the selected layer).
@@ -183,6 +221,17 @@ def main():
         check((r['offset_x'], r['offset_y']) == (0, 0), "canvas offsets", r)
         print("PASS: scale='canvas'")
 
+        # GIMP doesn't interpolate indexed images, so a 10x10 black|white indexed
+        # source scaled as it is keeps a hard edge; converted to RGB first, the
+        # edge is blended.
+        r = import_layer(file_path=SRC_INDEXED, scale='canvas', layer_name='indexed',
+                         offset_x=0, offset_y=0)
+        check((r['width'], r['height']) == (200, 150), "indexed canvas size", r)
+        row = [pixel(r['layer_id'], x, 75)[0] for x in range(80, 121, 4)]
+        check(row[0] == 0 and row[-1] == 255 and any(0 < v < 255 for v in row),
+              "indexed source scaled without interpolation", row)
+        print("PASS: an indexed source is scaled smoothly")
+
         r = import_layer(layer_name='placed', offset_x=5, offset_y=7)
         check((r['offset_x'], r['offset_y']) == (5, 7), "explicit offsets", r)
         r = import_layer(layer_name='third', position=2)
@@ -194,13 +243,20 @@ def main():
         print("PASS: offsets and positions")
 
         before = layer_names()
-        for params in ({'file_path': os.path.join(SRC_DIR, 'missing.png')},
-                       {'position': -1}, {'scale': 'stretch'}):
+        for params, expected in (
+                ({'file_path': os.path.join(SRC_DIR, 'missing.png')}, 'File not found'),
+                ({'file_path': NOT_AN_IMAGE}, 'Opening'),
+                ({'file_path': os.path.basename(SRC)}, 'absolute path'),
+                ({'file_path': '~/x.png'}, 'absolute path'),
+                ({'file_path': SRC_DIR}, 'is a directory'),
+                ({'position': -1}, 'position'),
+                ({'scale': 'stretch'}, 'Invalid scale')):
             r = cmd('open_image_as_layer', {'file_path': SRC, 'image_index': image_index(), **params})
-            check(r.get('status') == 'error', f"{params} did not fail", r)
+            check(r.get('status') == 'error' and expected in r.get('error', ''),
+                  f"{params} did not fail with '{expected}'", r.get('error', r))
             check(layer_names() == before, f"{params} changed the target", layer_names())
             check(image_count() == count, f"{params} left an image open", image_count())
-        print("PASS: bad file, position and scale -> error, target unchanged")
+        print("PASS: bad paths, files, position and scale -> clear error, target unchanged")
 
         # Make a libgimp call fail mid-import (it returns False, as GIMP does when
         # it rejects a call): the target must keep its layers and stay clean, and a
@@ -213,19 +269,23 @@ def main():
            "    if _l is not None:\n"
            "        _aslayer_ids.append(_l.get_id())\n"
            "    return _l")
-        for cls, method in (('Gimp.Layer', 'set_offsets'), ('Gimp.Image', 'insert_layer'),
-                            ('Gimp.Image', 'scale')):
+        for cls, method, source in (('Gimp.Layer', 'set_offsets', SRC),
+                                    ('Gimp.Image', 'insert_layer', SRC),
+                                    ('Gimp.Image', 'scale', SRC),
+                                    ('Gimp.Image', 'convert_rgb', SRC_INDEXED)):
             py("_aslayer_img.clean_all()",
                "_aslayer_ids.clear()",
-               f"_aslayer_orig = {cls}.{method}",
-               f"{cls}.{method} = lambda self, *a: False",
+               f"_aslayer_orig = {cls}.{method}")
+            stubbed = (cls, method)
+            py(f"{cls}.{method} = lambda self, *a: False",
                "Gimp.Layer.new_from_visible = _aslayer_record")
             try:
-                r = cmd('open_image_as_layer', {'file_path': SRC, 'image_index': image_index(),
+                r = cmd('open_image_as_layer', {'file_path': source, 'image_index': image_index(),
                                                 'scale': 'fit'})
             finally:
                 py(f"{cls}.{method} = _aslayer_orig",
                    "Gimp.Layer.new_from_visible = _aslayer_nfv")
+                stubbed = None
             check(r.get('status') == 'error', f"failing {method} did not fail the import", r)
             check(layer_names() == before, f"failing {method} changed the layers", layer_names())
             check(py("print(_aslayer_img.is_dirty())") == "False",
@@ -240,12 +300,22 @@ def main():
         # First, so it runs even if GIMP has gone away and the calls below raise.
         if SRC_DIR:
             shutil.rmtree(SRC_DIR, ignore_errors=True)
-        # Only restore a color this run saved; an older run's value may still be there.
-        if saved_bg:
+        # The stubs replace methods for the whole plug-in, so try the restore again.
+        if stubbed:
             try:
-                py("Gimp.context_set_background(_aslayer_bg)")
+                py(f"{stubbed[0]}.{stubbed[1]} = _aslayer_orig",
+                   "Gimp.Layer.new_from_visible = _aslayer_nfv")
             except (SystemExit, OSError):
-                print("  (cleanup) could not restore the background color", file=sys.stderr)
+                print(f"  (cleanup) could not restore {stubbed[0]}.{stubbed[1]}: "
+                      "restart the MCP server in GIMP", file=sys.stderr)
+        # Only restore settings this run saved; an older run's values may still be there.
+        if saved_context:
+            try:
+                py("Gimp.context_set_background(_aslayer_bg)",
+                   "Gimp.context_set_interpolation(_aslayer_interp)")
+            except (SystemExit, OSError):
+                print("  (cleanup) could not restore the background color and interpolation",
+                      file=sys.stderr)
         if made_target:
             try:
                 py("_aslayer_img.delete()")
