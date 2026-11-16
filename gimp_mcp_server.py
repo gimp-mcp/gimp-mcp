@@ -775,7 +775,8 @@ def open_image_as_layer(
     convert the image to RGB first to keep them. An animated GIF loads its frames
     as stacked layers, so only the top one (the last frame) is imported; multi-page
     files may behave the same way. The new layer becomes the selected layer, so
-    tools that default to the selected layer act on it.
+    tools that default to the selected layer act on it, unless the image has a
+    floating selection: that stays selected, so anchor it first.
 
     Parameters:
     - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.);
