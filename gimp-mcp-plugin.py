@@ -3367,6 +3367,17 @@ class MCPPlugin(Gimp.PlugIn):
             fill_type   = (params.get("fill_type") or "foreground").lower()
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
+            # With no active selection GIMP applies edit_clear()/edit_fill() to
+            # the ENTIRE layer. That silently destroys image content, so refuse
+            # it: whole-layer fills are what the fill_layer tool is for.
+            _ok, non_empty, _x1, _y1, _x2, _y2 = Gimp.Selection.bounds(image)
+            if not non_empty:
+                return {
+                    "status": "error",
+                    "error": ("No active selection on this image: with no selection GIMP applies "
+                              "the fill to the entire layer. Create a selection first, or use the "
+                              "fill_layer tool for a whole-layer fill."),
+                }
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             self._push_paint_context()
@@ -4024,7 +4035,7 @@ class MCPPlugin(Gimp.PlugIn):
           1. Duplicate source layer → shadow_layer
           2. Fill it with shadow color (alpha-locked so shape is preserved)
           3. Set opacity and offset
-          4. Gaussian-blur with plug-in-gauss
+          4. Gaussian-blur (plug-in-gauss, GEGL gaussian-blur fallback)
         """
         try:
             from gi.repository import Gegl
@@ -4059,17 +4070,27 @@ class MCPPlugin(Gimp.PlugIn):
                 offs = shadow_layer.get_offsets()
                 shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
 
-                # 4. Blur with plug-in-gauss (always available in GIMP 3.x)
+                # 4. Blur the shadow layer. plug-in-gauss is missing from some
+                # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.
                 if blur_radius > 0:
                     size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
-                    blur_proc = self._lookup_pdb("plug-in-gauss")
-                    cfg = blur_proc.create_config()
-                    cfg.set_property("image",      image)
-                    cfg.set_property("drawable",   shadow_layer)
-                    cfg.set_property("horizontal", size)
-                    cfg.set_property("vertical",   size)
-                    cfg.set_property("method",     0)
-                    self._run_pdb(blur_proc, cfg)
+                    blur_proc = Gimp.get_pdb().lookup_procedure("plug-in-gauss")
+                    if blur_proc:
+                        cfg = blur_proc.create_config()
+                        cfg.set_property("image",      image)
+                        cfg.set_property("drawable",   shadow_layer)
+                        cfg.set_property("horizontal", size)
+                        cfg.set_property("vertical",   size)
+                        cfg.set_property("method",     0)
+                        self._run_pdb(blur_proc, cfg)
+                    else:
+                        # The GEGL filter takes the radius directly, the way
+                        # blur and apply_gaussian_blur pass it.
+                        self._apply_gegl_filter(image, shadow_layer,
+                                                "gegl:gaussian-blur", {
+                                "std-dev-x": blur_radius,
+                                "std-dev-y": blur_radius,
+                            })
 
                 shadow_layer.set_name("Drop Shadow")
             finally:

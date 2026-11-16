@@ -148,7 +148,12 @@ print()
 print("=== Cat 6: Drawing ===")
 t('fill_layer',     cmd('fill_layer',     {'image_index': 0, 'color': '#ff0000'}))
 t('set_colors',     cmd('set_colors',     {'foreground': '#000000', 'background': '#ffffff'}))
+# fill_layer cleared the selection, so create one for fill_selection.
+t('select_for_fill', cmd('select_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20}))
 t('fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground'}))
+# Clear it again so the tools below draw on the whole layer instead of
+# being clipped to the 20x20 square.
+cmd('select_none', {'image_index': 0})
 t('draw_line',      cmd('draw_line',      {'image_index': 0, 'x1': 0, 'y1': 0, 'x2': 50, 'y2': 50, 'color': '#000000', 'width': 2}))
 t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#0000ff', 'line_width': 2.0}))
 t('draw_ellipse',   cmd('draw_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#00ff00', 'line_width': 2.0}))
@@ -308,6 +313,26 @@ _r = cmd('apply_vignette', {'image_index': 0, 'softness': 3.0})
 chk('f_vignette_rejects_out_of_range', _r.get('status') == 'error', _r.get('error'))
 _r = cmd('apply_vignette', {'image_index': 0, 'shape': 'hexagon'})
 chk('f_vignette_rejects_bad_shape', _r.get('status') == 'error', _r.get('error'))
+
+print()
+print("=== Cat 10: Fill safety ===")
+# With no selection, GIMP applies Edit > Clear / Fill to the ENTIRE layer.
+# fill_selection used to report success while destroying the image; it must
+# now refuse, leaving the layer untouched.
+cmd('new_canvas', {'width': 64, 'height': 64, 'fill': '#ff0000'})
+cmd('select_none', {'image_index': 0})
+_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+chk('fill_selection_refuses_no_selection', _r.get('status') == 'error', _r.get('error'))
+_r = cmd('fill_selection', {'image_index': 0, 'color': '#00ff00'})
+chk('fill_selection_refuses_no_selection_color', _r.get('status') == 'error', _r.get('error'))
+_p = cmd('get_pixel_color', {'image_index': 0, 'x': 32, 'y': 32}).get('results', {})
+chk('fill_selection_no_selection_layer_intact',
+    _p.get('color_rgb') == [255, 0, 0] and _p.get('alpha') == 255, _p)
+# The guard must not block a real selection.
+cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 10, 'height': 10})
+_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+chk('fill_selection_with_selection_succeeds', _r.get('status') == 'success', _r.get('error'))
+cmd('select_none', {'image_index': 0})
 
 print()
 print(f"=== TOTAL: {passed}/{passed+failed} PASSED ===")

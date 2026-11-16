@@ -182,6 +182,9 @@ class FakeImage:
     def get_layers(self):
         return ["layer"]
 
+    def get_item_position(self, item):
+        return 0
+
 
 class LayerlessImage(FakeImage):
     """An image without layers. As in GIMP 3.2, flatten() on it returns None."""
@@ -245,6 +248,11 @@ def install_gi_stub():
             @staticmethod
             def all(image):
                 CALLS.append(("select", "all"))
+
+            @staticmethod
+            def bounds(image):
+                # Non-empty selection so _fill_selection proceeds to edit_fill.
+                return (True, True, 0, 0, 1, 1)
 
         class Drawable:
             @staticmethod
@@ -470,16 +478,41 @@ def main():
               and ("select", shape) in CALLS else f"got {r}, calls {CALLS}")
 
     scenario({})
-    plugin._apply_gegl_filter = lambda image, drawable, op, props: CALLS.append(("gegl", op))
+    plugin._apply_gegl_filter = lambda image, drawable, op, props: CALLS.append(("gegl", op, props))
     r = plugin._blur({})
     check("blur falls back to the GEGL filter when plug-in-gauss is missing",
-          None if r["status"] == "success" and ("gegl", "gegl:gaussian-blur") in CALLS
+          None if r["status"] == "success"
+          and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur" for c in CALLS)
           else f"got {r}, calls {CALLS}")
 
     scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
     r = plugin._blur({})
     check("blur reports an error when plug-in-gauss fails",
           None if r["status"] == "error" else f"got {r}")
+
+    # apply_drop_shadow blurs its shadow layer the same way: it must take
+    # the GEGL fallback when plug-in-gauss is missing, and report an error
+    # when the plug-in runs and fails.
+    real_resolve = plugin._resolve_layer
+    shadow = types.SimpleNamespace(set_lock_alpha=lambda v: None,
+                                   set_opacity=lambda v: None,
+                                   get_offsets=lambda: types.SimpleNamespace(offset_x=0, offset_y=0),
+                                   set_offsets=lambda *a: None,
+                                   set_name=lambda n: None)
+    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(copy=lambda: shadow)
+    scenario({})
+    r = plugin._apply_drop_shadow({"blur_radius": 7.5})
+    check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
+          None if r["status"] == "success"
+          and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur"
+                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5} for c in CALLS)
+          else f"got {r}, calls {CALLS}")
+
+    scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
+    r = plugin._apply_drop_shadow({})
+    check("apply_drop_shadow reports an error when plug-in-gauss fails",
+          None if r["status"] == "error" else f"got {r}")
+    plugin._resolve_layer = real_resolve
 
     scenario({})
     r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})

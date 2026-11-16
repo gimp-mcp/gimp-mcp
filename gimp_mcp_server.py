@@ -2032,6 +2032,9 @@ def fill_selection(
 ) -> dict:
     """Fill the current selection with a color or fill type.
 
+    Returns an error when nothing is selected; use fill_layer to fill a
+    whole layer.
+
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
     - fill_type: Fill type override: "foreground", "background", or "transparent"
