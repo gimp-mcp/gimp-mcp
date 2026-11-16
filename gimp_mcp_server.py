@@ -772,11 +772,15 @@ def open_image_as_layer(
     content always becomes one new layer: a multi-layer file (XCF, PSD, ORA) is
     merged, and transparency is kept. The layer is converted to the image's color
     mode; in an indexed image its colors are reduced to that image's palette, so
-    convert the image to RGB first to keep them. An animated GIF loads its frames
-    as stacked layers, so only the top one (the last frame) is imported; multi-page
-    files may behave the same way. The new layer becomes the selected layer, so
-    tools that default to the selected layer act on it, unless the image has a
-    floating selection: that stays selected, so anchor it first.
+    convert the image to RGB first to keep them. An animated GIF loads as one
+    visible layer per frame, so the imported layer is all frames stacked (for a GIF
+    of opaque full-size frames, that looks like the last frame); multi-page files
+    may behave the same way. The new layer becomes the selected layer, so tools
+    that default to the selected layer act on it. If the image has a floating
+    selection (only call_api code makes one), anchor it first, with call_api:
+    Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+    isn't selected, and position 0 puts it second from the top (the result reports
+    the real position).
 
     Parameters:
     - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.);
