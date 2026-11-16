@@ -1656,11 +1656,13 @@ def create_layer(
       (the highest one if several are selected), inside its layer group if it is
       in one; if the selected layer is a group, at the top inside that group. A
       selected group counts as the place to insert into, so if the selected layers
-      don't all lead to the same place (e.g. a group plus another layer, or two
-      groups), or nothing is selected, the layer goes to the top of the image.
+      don't all lead to the same place (e.g. a group plus a layer outside it, or
+      two groups), or nothing is selected, the layer goes to the top of the image.
+      A group plus a layer inside it leads to that group.
       Don't pass other negative values. Pass 0 or more to keep the layer at the top
       level: other tools can't find a layer inside a group by layer_name.
-      The new layer becomes the selected layer.
+      The new layer becomes the selected layer, unless the image has a floating
+      selection: that stays selected, so anchor it first.
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id, width, height, position}; position is the value
@@ -1832,7 +1834,8 @@ def reorder_layer(
       top-level layers: a layer inside a group is not found by name, and an index
       always refers to a top-level layer. To move a grouped layer, select it and
       leave both out, e.g. via call_api: image.set_selected_layers([layer]). A layer
-      just made by create_layer is already selected.
+      just made by create_layer is already selected (unless the image has a floating
+      selection, which always stays selected; anchor it first).
     - image_index: Target image index (default 0)
 
     Returns status dict.
