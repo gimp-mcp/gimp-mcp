@@ -1660,7 +1660,7 @@ def create_layer(
       Don't pass other negative values. Prefer 0 or more: other tools can't find a
       layer inside a group by layer_name.
       The new layer becomes the selected layer. If the image has a floating
-      selection (only call_api code makes one), anchor it first, with call_api:
+      selection (a user can make one in GIMP), anchor it first, with call_api:
       Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
       isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
