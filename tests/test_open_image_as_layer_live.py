@@ -122,6 +122,7 @@ def make_source():
         "Gimp.context_push()",
         "Gimp.context_set_opacity(100.0)",
         "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
+        "Gimp.context_set_feather(False)",
         "_a.edit_fill(Gimp.FillType.TRANSPARENT)",
         "_src.select_rectangle(Gimp.ChannelOps.REPLACE, 10, 10, 20, 20)",
         "Gimp.context_set_foreground(Gegl.Color.new('rgb(1.0, 0.0, 0.0)'))",
