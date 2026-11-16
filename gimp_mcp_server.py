@@ -1654,9 +1654,13 @@ def create_layer(
       top: 0 = top, 1 = second from the top, and so on; a value past the bottom puts
       the layer at the bottom. -1 (default) = directly above the selected layer
       (the highest one if several are selected), inside its layer group if it is
-      in one; if the selected layer is a group, at the top inside that group. If the
-      selected layers are not all in the same group, the layer goes to the top of the
-      image.
+      in one; if the selected layer is a group, at the top inside that group. A
+      selected group counts as the place to insert into, so if the selected layers
+      don't all lead to the same place (e.g. a group plus another layer, or two
+      groups), or nothing is selected, the layer goes to the top of the image.
+      Don't pass other negative values. Pass 0 or more to keep the layer at the top
+      level: other tools can't find a layer inside a group by layer_name.
+      The new layer becomes the selected layer.
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id, width, height, position}; position is the value
@@ -1823,10 +1827,12 @@ def reorder_layer(
       from the top: 0 = top, 1 = second from the top, and so on; a value past the
       bottom moves the layer to the bottom, and a negative value moves it to the top.
       A layer inside a layer group is moved out of the group.
-    - layer_name / layer_index: Identify the layer (defaults to the selected layer).
-      Both only find top-level layers: a layer inside a group is not found by name,
-      and an index always refers to a top-level layer. To move a grouped layer,
-      select it in GIMP and leave both out.
+    - layer_name / layer_index: Identify the layer (defaults to the selected layer;
+      if several are selected, any one of them, so select only one). Both only find
+      top-level layers: a layer inside a group is not found by name, and an index
+      always refers to a top-level layer. To move a grouped layer, select it and
+      leave both out, e.g. via call_api: image.set_selected_layers([layer]). A layer
+      just made by create_layer is already selected.
     - image_index: Target image index (default 0)
 
     Returns status dict.
