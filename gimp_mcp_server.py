@@ -1717,7 +1717,8 @@ def create_layer(
     Parameters:
     - name: Layer name (default "New Layer")
     - width, height: Layer dimensions; defaults to image dimensions
-    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
+    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
+      it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
     - position: 0 or more = index among the image's top-level layers, counted from
@@ -1727,7 +1728,7 @@ def create_layer(
       above the highest if they are non-group layers with the same parent; at the
       top inside a selected group if the others are non-group layers directly
       inside it; otherwise, or with nothing selected, at the top of the image.
-      Don't pass other negative values. Prefer 0 or more: other tools can't find a
+      Other negative values are rejected. Prefer 0 or more: other tools can't find a
       layer inside a group by layer_name.
       The new layer becomes the selected layer. If the image has a floating
       selection (a user can make one in GIMP), anchor it first, with call_api:
@@ -1735,8 +1736,10 @@ def create_layer(
       isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, width, height, position}; position is the value
-    passed in, not the layer's resulting index
+    Returns: {layer_name, layer_id, width, height, position, parent}; position is where
+    the layer landed (0 = top), which can differ from the value passed in. parent is
+    the name of the layer group it went into (only possible with -1), and position is
+    then its index in that group; null at the top level.
     """
     try:
         conn = get_gimp_connection()
