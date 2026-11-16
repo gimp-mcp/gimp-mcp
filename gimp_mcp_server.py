@@ -1650,19 +1650,19 @@ def create_layer(
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
-    - position: Stack position among the image's top-level layers, counted from the
-      top: 0 = top, 1 = second from the top, and so on; a value past the bottom puts
-      the layer at the bottom. -1 (default) = directly above the selected layer
-      (the highest one if several are selected), inside its layer group if it is
-      in one; if the selected layer is a group, at the top inside that group. A
-      selected group counts as the place to insert into, so if the selected layers
-      don't all lead to the same place (e.g. a group plus a layer outside it, or
-      two groups), or nothing is selected, the layer goes to the top of the image.
-      A group plus a layer inside it leads to that group.
-      Don't pass other negative values. Pass 0 or more to keep the layer at the top
-      level: other tools can't find a layer inside a group by layer_name.
-      The new layer becomes the selected layer, unless the image has a floating
-      selection: that stays selected, so anchor it first.
+    - position: 0 or more = index among the image's top-level layers, counted from
+      the top (0 = top); a value past the bottom puts the layer at the bottom.
+      -1 (default) = directly above the selected layer, inside its group if it is in
+      one; if a group is selected, at the top inside it. With several selected:
+      above the highest if they are non-group layers with the same parent; at the
+      top inside a selected group if the others are non-group layers directly
+      inside it; otherwise, or with nothing selected, at the top of the image.
+      Don't pass other negative values. Prefer 0 or more: other tools can't find a
+      layer inside a group by layer_name.
+      The new layer becomes the selected layer. If the image has a floating
+      selection (only call_api code makes one), anchor it first, with call_api:
+      Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+      isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id, width, height, position}; position is the value
@@ -1830,12 +1830,13 @@ def reorder_layer(
       bottom moves the layer to the bottom, and a negative value moves it to the top.
       A layer inside a layer group is moved out of the group.
     - layer_name / layer_index: Identify the layer (defaults to the selected layer;
-      if several are selected, any one of them, so select only one). Both only find
-      top-level layers: a layer inside a group is not found by name, and an index
-      always refers to a top-level layer. To move a grouped layer, select it and
-      leave both out, e.g. via call_api: image.set_selected_layers([layer]). A layer
-      just made by create_layer is already selected (unless the image has a floating
-      selection, which always stays selected; anchor it first).
+      if several are selected, any one of them, so select only one). Both find only
+      top-level layers. To move a grouped layer, select it and leave both out, e.g.
+      via call_api: image.set_selected_layers([layer]). A layer just made by
+      create_layer is already selected. But while the image has a floating
+      selection, that is always the selected layer, so leaving both out moves it.
+      Anchor it before calling create_layer: anchoring afterwards selects the layer
+      it was pasted on, not the new one.
     - image_index: Target image index (default 0)
 
     Returns status dict.
