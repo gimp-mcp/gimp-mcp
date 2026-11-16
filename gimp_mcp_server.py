@@ -1716,7 +1716,8 @@ def create_layer(
 
     Parameters:
     - name: Layer name (default "New Layer")
-    - width, height: Layer dimensions; defaults to image dimensions
+    - width, height: Layer dimensions in pixels, from 1 to 524288 inclusive;
+      omitted or None values use the corresponding image dimension. Zero is invalid.
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
       it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
