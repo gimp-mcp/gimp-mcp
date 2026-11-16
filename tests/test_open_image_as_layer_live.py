@@ -16,12 +16,15 @@ private /tmp. Exits 0 on pass, 1 on fail.
 """
 import json
 import os
+import shutil
 import socket
 import sys
+import tempfile
 
 HOST, PORT = '127.0.0.1', int(os.environ.get('GIMP_MCP_PORT', 9877))
-SRC_DIR = os.path.join(os.path.expanduser('~'), 'tmp', 'gimp-mcp-test')
-SRC = os.path.join(SRC_DIR, 'as_layer_src.xcf')
+TMP_ROOT = os.path.join(os.path.expanduser('~'), 'tmp')
+# make_source() sets these to a fresh directory, so no earlier file is reused or deleted.
+SRC_DIR = SRC = None
 
 
 def send(msg, timeout=60):
@@ -99,8 +102,11 @@ def import_layer(**params):
 
 def make_source():
     """Save a 100x80 two-layer XCF: red 20x20 at (10,10), blue 30x30 layer at (60,40)."""
-    os.makedirs(SRC_DIR, exist_ok=True)
-    py(
+    global SRC_DIR, SRC
+    os.makedirs(TMP_ROOT, exist_ok=True)
+    SRC_DIR = tempfile.mkdtemp(prefix='gimp-mcp-as-layer-', dir=TMP_ROOT)
+    SRC = os.path.join(SRC_DIR, 'as_layer_src.xcf')
+    saved = py(
         "import json",
         "from gi.repository import Gimp, Gegl, Gio",
         "_src = Gimp.Image.new(100, 80, Gimp.ImageBaseType.RGB)",
@@ -124,7 +130,7 @@ def make_source():
         "_src.delete()",
         "print(_ok)",
     )
-    check(os.path.exists(SRC), "source XCF was not written", SRC)
+    check(saved == 'True' and os.path.exists(SRC), "source XCF was not written", (saved, SRC))
 
 
 def make_target():
@@ -230,6 +236,9 @@ def main():
         print("PASS: a failure mid-import leaves the target unchanged and clean, no leaked layer")
         return 0
     finally:
+        # First, so it runs even if GIMP has gone away and the calls below raise.
+        if SRC_DIR:
+            shutil.rmtree(SRC_DIR, ignore_errors=True)
         try:
             py("Gimp.context_set_background(_aslayer_bg)")
         except SystemExit:
@@ -239,11 +248,6 @@ def main():
                 py("_aslayer_img.delete()")
             except SystemExit:
                 print("  (cleanup) could not delete the test image", file=sys.stderr)
-        try:
-            os.remove(SRC)
-            os.rmdir(SRC_DIR)
-        except OSError:
-            pass
 
 
 if __name__ == '__main__':
