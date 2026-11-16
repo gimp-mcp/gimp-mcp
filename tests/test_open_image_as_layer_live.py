@@ -146,7 +146,7 @@ def make_target():
 
 
 def main():
-    made_target = False
+    made_target = saved_bg = False
     try:
         make_source()
         make_target()
@@ -154,6 +154,7 @@ def main():
         # A flatten would fill transparent areas with this color.
         py("_aslayer_bg = Gimp.context_get_background()",
            "Gimp.context_set_background(Gegl.Color.new('lime'))")
+        saved_bg = True
         count = image_count()
 
         # Default: file's size, centered, on top (not above the selected layer).
@@ -239,14 +240,16 @@ def main():
         # First, so it runs even if GIMP has gone away and the calls below raise.
         if SRC_DIR:
             shutil.rmtree(SRC_DIR, ignore_errors=True)
-        try:
-            py("Gimp.context_set_background(_aslayer_bg)")
-        except SystemExit:
-            pass
+        # Only restore a color this run saved; an older run's value may still be there.
+        if saved_bg:
+            try:
+                py("Gimp.context_set_background(_aslayer_bg)")
+            except (SystemExit, OSError):
+                print("  (cleanup) could not restore the background color", file=sys.stderr)
         if made_target:
             try:
                 py("_aslayer_img.delete()")
-            except SystemExit:
+            except (SystemExit, OSError):
                 print("  (cleanup) could not delete the test image", file=sys.stderr)
 
 
