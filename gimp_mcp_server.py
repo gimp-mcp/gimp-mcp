@@ -2320,7 +2320,7 @@ def add_text(
     text: str,
     x: int = 0,
     y: int = 0,
-    font: str = "Sans",
+    font: str = "Sans-serif",
     size: int = 24,
     color: str = "black",
     image_index: int = 0
@@ -2330,12 +2330,16 @@ def add_text(
     Parameters:
     - text: The text string to render
     - x, y: Position of the text layer's top-left corner (default 0, 0)
-    - font: Font family name — "Sans" (default), "Serif", etc.
+    - font: Font name, as listed by list_fonts (default "Sans-serif"). Common
+      GIMP 2 aliases (such as "Sans") resolve to their GIMP 3 names; an unknown
+      name falls back to a default font and adds a warning to the result.
     - size: Font size in pixels (default 24)
     - color: Text color (CSS name, hex, or rgb() string; default "black")
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, text_width, text_height, position}
+    Returns: {layer_name, layer_id, text_width, text_height, position, font},
+    plus requested_font when it differs from font and warning when a fallback
+    font was substituted.
     """
     try:
         conn = get_gimp_connection()
@@ -2367,13 +2371,16 @@ def edit_text(
     Parameters:
     - layer_name: Name of the text layer to edit
     - text: New text content (omit to leave unchanged)
-    - font: New font name, as listed by list_fonts (omit to leave unchanged). An unknown
-      name falls back to a close match or a default font.
+    - font: New font name, as listed by list_fonts (omit, or pass an empty name,
+      to leave unchanged). Common GIMP 2 aliases resolve to their GIMP 3 names; an unknown name falls
+      back to a default font and adds a warning to the result.
     - size: New font size in pixels (omit to leave unchanged)
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns {status}, plus {font} with the font actually applied when font was given.
+    Returns {status}, plus font (the applied font) when a font name was given,
+    requested_font when it differs from font, and warning when a fallback font
+    was substituted.
     """
     try:
         conn = get_gimp_connection()

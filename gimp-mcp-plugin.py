@@ -3617,27 +3617,67 @@ class MCPPlugin(Gimp.PlugIn):
     # CATEGORY 7 — Text
     # =========================================================================
 
-    def _resolve_font(self, name):
-        """Resolve a font name to a Gimp.Font."""
-        if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
-            return None
-
-        font_obj = Gimp.Font.get_by_name(name)
-        if font_obj is not None:
-            return font_obj
-
-        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
-        # the 3.2 equivalent is "Sans-serif".
-        for alias in (name + "-serif", name + " Regular",
-                      name.replace(" ", "-"),
-                      "Sans-serif", "Serif", "Monospace"):
-            font_obj = Gimp.Font.get_by_name(alias)
+    def _default_font(self):
+        """Return the first available default or installed Gimp.Font, or None."""
+        for fallback in ("Sans-serif", "Serif", "Monospace"):
+            font_obj = Gimp.Font.get_by_name(fallback)
             if font_obj is not None:
                 return font_obj
 
         raw = Gimp.fonts_get_list("")
-        flist = list(raw[1]) if isinstance(raw, tuple) and len(raw) > 1 else list(raw)
+        if isinstance(raw, tuple):
+            flist = list(raw[1]) if len(raw) > 1 else []
+        else:
+            flist = list(raw)
         return flist[0] if flist else None
+
+    def _resolve_font(self, name):
+        """Resolve a font name to (Gimp.Font, substituted), or (None, False).
+
+        Surrounding whitespace is stripped, and an empty name selects the
+        default font without reporting a substitution. Exact and GIMP 2.x alias
+        matches return substituted=False; falling back to a default or the first
+        installed font for an unknown name returns substituted=True.
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"font must be a string, got {type(name).__name__}")
+        if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
+            return None, False
+
+        name = name.strip()
+        if not name:
+            return self._default_font(), False
+
+        font_obj = Gimp.Font.get_by_name(name)
+        if font_obj is not None:
+            return font_obj, False
+
+        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
+        # the 3.2 equivalent is "Sans-serif".
+        for alias in (name + "-serif", name + " Regular",
+                      name.replace(" ", "-")):
+            if alias == name:
+                continue
+            font_obj = Gimp.Font.get_by_name(alias)
+            if font_obj is not None:
+                return font_obj, False
+
+        font_obj = self._default_font()
+        return (font_obj, True) if font_obj is not None else (None, False)
+
+    def _font_result_fields(self, requested, font_obj, substituted):
+        """Build the font result fields for add_text and edit_text."""
+        applied = font_obj.get_name()
+        fields = {"font": applied}
+        clean_requested = requested.strip()
+        if clean_requested and clean_requested != applied:
+            fields["requested_font"] = clean_requested
+        if substituted:
+            fields["warning"] = (
+                f"Font {clean_requested!r} not found; used {applied!r}. "
+                "See list_fonts for installed fonts."
+            )
+        return fields
 
     def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
         """Create a text layer via Gimp.TextLayer.new."""
@@ -3708,11 +3748,20 @@ class MCPPlugin(Gimp.PlugIn):
             text_str    = params.get("text", "")
             x           = int(params.get("x", 0))
             y           = int(params.get("y", 0))
-            font        = params.get("font", "Sans")
+            font        = params.get("font")
+            if font is None:
+                font = "Sans-serif"
             size        = int(params.get("size", 24))
             color_str   = params.get("color", "black")
 
             image      = self._get_image(image_index)
+            font_obj, substituted = self._resolve_font(font)
+            if font_obj is None:
+                return {
+                    "status": "error",
+                    "error":  f"add_text: no font found for {font!r}",
+                }
+
             before_ids = {lyr.get_id() for lyr in image.get_layers()}
             text_layer = None
 
@@ -3720,13 +3769,11 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                font_obj = self._resolve_font(font)
-                if font_obj is not None:
-                    text_layer = self._create_text_layer_native(
-                        image, text_str, font_obj, size, x, y, color_str)
-                    if text_layer is None:
-                        self._create_text_layer_pdb(
-                            image, text_str, font_obj, size, x, y)
+                text_layer = self._create_text_layer_native(
+                    image, text_str, font_obj, size, x, y, color_str)
+                if text_layer is None:
+                    self._create_text_layer_pdb(
+                        image, text_str, font_obj, size, x, y)
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
@@ -3742,16 +3789,15 @@ class MCPPlugin(Gimp.PlugIn):
                     "error":  "add_text: no text layer was created (no PDB procedure succeeded)",
                 }
 
-            return {
-                "status": "success",
-                "results": {
-                    "layer_name":  text_layer.get_name(),
-                    "layer_id":    text_layer.get_id(),
-                    "text_width":  text_layer.get_width(),
-                    "text_height": text_layer.get_height(),
-                    "position":    [x, y],
-                }
+            results = {
+                "layer_name":  text_layer.get_name(),
+                "layer_id":    text_layer.get_id(),
+                "text_width":  text_layer.get_width(),
+                "text_height": text_layer.get_height(),
+                "position":    [x, y],
             }
+            results.update(self._font_result_fields(font, font_obj, substituted))
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -3763,16 +3809,21 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name  = params.get("layer_name", "")
             new_text    = params.get("text", None)
             new_font    = params.get("font", None)
+            # A blank font leaves the font unchanged, as if it were omitted:
+            # clients often send "" for optional arguments.
+            if isinstance(new_font, str) and not new_font.strip():
+                new_font = None
             new_size    = params.get("size", None)
             new_color   = params.get("color", None)
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
             # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
-            # before any edit. _resolve_font falls back to a close match or a
-            # default font, so this only fails if GIMP has no fonts at all.
+            # before any edit. _resolve_font falls back to an alias or a default
+            # font, so this only fails if GIMP has no fonts at all.
             font_obj = None
+            substituted = False
             if new_font is not None:
-                font_obj = self._resolve_font(new_font)
+                font_obj, substituted = self._resolve_font(new_font)
                 if font_obj is None:
                     return {"status": "error",
                             "error": f"edit_text: no font found for {new_font!r}"}
@@ -3808,8 +3859,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.displays_flush()
             results = {"status": "success"}
             if font_obj is not None:
-                # _resolve_font may pick a close match or a fallback, so report it.
-                results["font"] = font_obj.get_name()
+                results.update(self._font_result_fields(new_font, font_obj, substituted))
             return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
