@@ -547,7 +547,9 @@ def get_state_snapshot(
     - max_size: Maximum width/height of the returned preview in pixels (default: 512,
                 0 = no scaling). Only shrinks: a smaller image or region comes back
                 at its own size
-    - region: Optional dict {x, y, width, height} to zoom into a specific area
+    - region: Optional dict {x, y, width, height} to zoom into a specific area.
+              Values must be integers, not booleans. x and y default to 0 and must
+              be at least 0; width and height are required and must be at least 1.
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
@@ -572,18 +574,26 @@ def get_state_snapshot(
         # caller never passed
         if max_size is not None and max_size < 0:
             raise ValueError(f"max_size must be at least 0 (0 means no scaling), got {max_size}")
-        conn = get_gimp_connection()
         params: dict = {"image_index": image_index}
         if max_size:
             params["max_width"]  = max_size
             params["max_height"] = max_size
-        if region:
+        if region is not None:
+            for key, minimum in [("x", 0), ("y", 0), ("width", 1), ("height", 1)]:
+                if key in ("width", "height") and key not in region:
+                    raise ValueError(f"Region parameter '{key}' is required")
+                value = region.get(key, 0)
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ValueError(f"Region parameter '{key}' must be of type int, got {type(value).__name__}")
+                if value < minimum:
+                    raise ValueError(f"Region parameter '{key}' must be at least {minimum}, got {value}")
             params["region"] = {
-                "origin_x": int(region.get("x", 0)),
-                "origin_y": int(region.get("y", 0)),
-                "width":    int(region.get("width",  max_size)),
-                "height":   int(region.get("height", max_size)),
+                "origin_x": region.get("x", 0),
+                "origin_y": region.get("y", 0),
+                "width":    region["width"],
+                "height":   region["height"],
             }
+        conn = get_gimp_connection()
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
             img_info  = result["results"]

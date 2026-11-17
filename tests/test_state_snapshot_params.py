@@ -70,5 +70,26 @@ check("a region's x / y / width / height become the plugin's region keys",
       error is None and params.get("region") == {"origin_x": 5, "origin_y": 7, "width": 40, "height": 20}
       and params.get("max_width") == 300, f"sent {params}, error {error!r}")
 
+params, error = snapshot(max_size=0, region={"width": 40, "height": 20})
+check("a region defaults x and y to zero without scaling",
+      error is None and params == {"image_index": 0, "region": {
+          "origin_x": 0, "origin_y": 0, "width": 40, "height": 20}},
+      f"sent {params}, error {error!r}")
+
+for max_size in (0, 512):
+    for region, missing in [({}, "width"), ({"height": 20}, "width"), ({"width": 40}, "height")]:
+        params, error = snapshot(max_size=max_size, region=region)
+        check(f"region {region} requires {missing} independently of max_size {max_size}",
+              params is None and error is not None and missing in error,
+              f"sent {params}, error {error!r}")
+
+for key, minimum in [("x", 0), ("y", 0), ("width", 1), ("height", 1)]:
+    for value in (True, False, 1.7, "abc", "1", None, minimum - 1):
+        region = {"x": 5, "y": 7, "width": 40, "height": 20, key: value}
+        params, error = snapshot(region=region)
+        check(f"region {key} rejects {value!r} before sending with the caller's key name",
+              params is None and error is not None and f"'{key}'" in error,
+              f"sent {params}, error {error!r}")
+
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)

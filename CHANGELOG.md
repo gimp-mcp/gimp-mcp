@@ -13,6 +13,11 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- `get_state_snapshot` validates region coordinates and required dimensions before
+  connecting to GIMP. Missing sizes no longer use `max_size`, and invalid values
+  return errors naming the caller's `x`, `y`, `width` or `height` parameter (#141).
+
 ## [0.4.0] - 2026-11-17
 
 ### Added
