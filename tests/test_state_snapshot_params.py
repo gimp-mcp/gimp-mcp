@@ -21,6 +21,7 @@ import gimp_mcp_server as server  # noqa: E402
 
 failures = []
 SENT = []  # (command, params) the fake connection received
+CONNECTION_ATTEMPTS = []
 
 
 def check(name, condition, detail=""):
@@ -35,12 +36,18 @@ class FakeConnection:
         return {"status": "success", "results": {"image_data": base64.b64encode(b"png").decode()}}
 
 
-server.get_gimp_connection = lambda: FakeConnection()
+def get_connection():
+    CONNECTION_ATTEMPTS.append(None)
+    return FakeConnection()
+
+
+server.get_gimp_connection = get_connection
 
 
 def snapshot(**kwargs):
     """Call get_state_snapshot; return (params sent or None, error message or None)."""
     SENT.clear()
+    CONNECTION_ATTEMPTS.clear()
     try:
         server.get_state_snapshot(None, **kwargs)
         error = None
@@ -79,17 +86,17 @@ check("a region defaults x and y to zero without scaling",
 for max_size in (0, 512):
     for region, missing in [({}, "width"), ({"height": 20}, "width"), ({"width": 40}, "height")]:
         params, error = snapshot(max_size=max_size, region=region)
-        check(f"region {region} requires {missing} independently of max_size {max_size}",
-              params is None and error is not None and missing in error,
-              f"sent {params}, error {error!r}")
+        check(f"region {region} requires {missing} before connecting, independently of max_size {max_size}",
+              params is None and not CONNECTION_ATTEMPTS and error is not None and missing in error,
+              f"connected {bool(CONNECTION_ATTEMPTS)}, sent {params}, error {error!r}")
 
 for key, minimum in [("x", 0), ("y", 0), ("width", 1), ("height", 1)]:
     for value in (True, False, 1.7, "abc", "1", None, minimum - 1):
         region = {"x": 5, "y": 7, "width": 40, "height": 20, key: value}
         params, error = snapshot(region=region)
-        check(f"region {key} rejects {value!r} before sending with the caller's key name",
-              params is None and error is not None and f"'{key}'" in error,
-              f"sent {params}, error {error!r}")
+        check(f"region {key} rejects {value!r} before connecting with the caller's key name",
+              params is None and not CONNECTION_ATTEMPTS and error is not None and f"'{key}'" in error,
+              f"connected {bool(CONNECTION_ATTEMPTS)}, sent {params}, error {error!r}")
 
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
