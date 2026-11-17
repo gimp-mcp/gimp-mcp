@@ -13,6 +13,16 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Added
+- `open_image_as_layer` imports an image file as a new layer in an open image, without
+  opening it in its own window. A multi-layer file is merged into one layer with its
+  transparency kept. The layer can be scaled to fit the canvas or stretched to its size,
+  and is centered unless offsets are given. Based on #61 by @kabachuha.
+
+### Changed
+- `create_layer`'s `fill` covers the whole layer. With a selection active, it used to fill only
+  the selection (#130).
+
 ### Fixed
 - `get_image_bitmap` and `get_state_snapshot` region snapshots show the visible image. They
   copied only the top layer, even when it was hidden, so they could show the wrong pixels. Both
@@ -30,12 +40,37 @@ right command when the versions differ.
   is below 1 (`get_image_bitmap`'s `max_width` / `max_height`, or a negative `max_size` for
   `get_state_snapshot`, where 0 still means no scaling). Before, these returned a blank or wrong
   image, a misleading error or a division by zero.
+- `create_layer` rejects width or height outside 1–524288 with an error naming the
+  dimension and value. Zero no longer silently uses the image size (#135).
+- `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on
+  GIMP 3.2 builds that lack the Gauss blur plug-in. It now falls back to the
+  `gegl:gaussian-blur` operation, the same fallback `blur` already uses.
+- `fill_selection` no longer clears or fills the entire layer when no selection is active. GIMP
+  applies an edit-clear or edit-fill with no selection to the whole layer, so a leftover empty
+  selection silently destroyed image content while the tool reported success. An empty selection
+  now returns an error pointing to `fill_layer` for whole-layer fills.
+- The `create_layer` and `reorder_layer` docs said position 0 is the bottom of the layer stack.
+  In GIMP it is the top, so asking for the bottom put the layer on top. The docs now match
+  GIMP: positions count from the top, and `create_layer`'s default -1 means directly above
+  the selected layer (#129).
+- `create_layer` reports where the layer landed, not the position it was given: with the default
+  -1, or with a floating selection in the image, the two differ. A new `parent` field names the
+  layer group it went into, if any (#130).
+- `create_layer` works on indexed images. It used to fail with an error about a gray layer (#130).
+- `create_layer` and `reorder_layer` no longer report success when GIMP refuses to insert or
+  move the layer. They return GIMP's error and leave the image unchanged (#130).
+- `create_layer` rejects positions below -1. GIMP read them as "above the selected layer, but
+  never inside a group" (#130).
+- `add_text` no longer replaces an unknown font silently. Its default font is now `Sans-serif`, and
+  its result reports `font` (the applied font), `requested_font` when it differs from `font`, and a
+  `warning` naming both fonts when a default font was substituted (#124).
 - `export_sprite_sheet` works on GIMP 3. It failed every time with
   `ImageBaseType has no attribute 'RGBA'`, and the sheet now keeps its transparent background
   instead of being flattened (#64).
-- `edit_text` can change a text layer's font. Passing `font` always failed on GIMP 3.2. The result
-  now includes the font that was applied, which can be a close match or a default when the name
-  isn't found (#64).
+- `edit_text` can change a text layer's font. Passing `font` always failed on GIMP 3.2. When a font
+  name is given, the result now includes `font` (the applied font), `requested_font` when it differs
+  from `font`, and a `warning` when the requested font wasn't found and a default was substituted
+  (#64, #124).
 - `export_image`, `batch_export`, `export_web_optimized` and `export_icon_sizes` now write real
   JPEG, WebP, TIFF and BMP files. They used GIMP 2 procedure names that GIMP 3 doesn't have, so
   every export silently fell back to PNG data under a `.jpg`, `.webp`, `.tiff` or `.bmp` name,

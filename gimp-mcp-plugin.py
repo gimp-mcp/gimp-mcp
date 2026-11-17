@@ -648,6 +648,8 @@ class MCPPlugin(Gimp.PlugIn):
             # ── Category 1: File Operations ──────────────────────────────────
             elif "type" in j and j["type"] == "open_image":
                 return self._open_image(j.get("params", {}))
+            elif "type" in j and j["type"] == "open_image_as_layer":
+                return self._open_image_as_layer(j.get("params", {}))
             elif "type" in j and j["type"] == "save_xcf":
                 return self._save_xcf(j.get("params", {}))
             elif "type" in j and j["type"] == "export_image":
@@ -2190,6 +2192,111 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    def _open_image_as_layer(self, params):
+        """Import an image file as one new layer in an open image.
+
+        The file is loaded into a temporary image with no display, and
+        Gimp.Layer.new_from_visible() turns its visible composite into a layer
+        of the target image. That keeps transparency, converts to the target's
+        color mode, and keeps content where it sits on the source canvas.
+        """
+        try:
+            from gi.repository import Gio
+            file_path = params.get("file_path", "")
+            if not file_path:
+                return {"status": "error", "error": "file_path is required"}
+            image_index = int(params.get("image_index", 0))
+            layer_name = (params.get("layer_name")
+                          or os.path.splitext(os.path.basename(file_path))[0])
+            position = int(params.get("position", 0))
+            if position < 0:
+                return {"status": "error",
+                        "error": f"position must be >= 0 (0 = top), got {position}"}
+            scale = str(params.get("scale") or "none").lower()
+            if scale not in ("none", "fit", "canvas"):
+                return {"status": "error",
+                        "error": f"Invalid scale '{scale}' (use 'none', 'fit' or 'canvas')"}
+            offset_x = params.get("offset_x")
+            offset_y = params.get("offset_y")
+
+            # A relative path would resolve against GIMP's working directory, which
+            # the client can't know. (The MCP server expands "~": GIMP's own home
+            # can differ, e.g. a Snap GIMP's.)
+            if not os.path.isabs(file_path):
+                return {"status": "error",
+                        "error": f"file_path must be an absolute path, got '{file_path}'"}
+            if os.path.isdir(file_path):
+                return {"status": "error",
+                        "error": f"{file_path} is a directory, not an image file"}
+            # GIMP's own error for a missing file is cryptic ("... out of range").
+            if not os.path.isfile(file_path):
+                return {"status": "error", "error": f"File not found: {file_path}"}
+            # Resolve the target before loading: Gimp.get_images() lists the
+            # newest image first, so the temporary image would shift the indices.
+            target = self._get_image(image_index)
+            canvas_w, canvas_h = target.get_width(), target.get_height()
+            loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(file_path))
+            # GIMP returns None for a missing file and for one it can't read;
+            # _check_item adds GIMP's own error message, which tells them apart.
+            self._check_item(loaded, f"Opening {file_path}")
+            # Everything up to insert_layer() works on the temporary image or on a
+            # layer that isn't in the target yet, so a failure leaves the target
+            # untouched: no layer, no undo step, not marked dirty.
+            layer = None
+            inserted = False
+            try:
+                try:
+                    src_w, src_h = loaded.get_width(), loaded.get_height()
+                    if scale != "none" and loaded.get_base_type() == Gimp.ImageBaseType.INDEXED:
+                        # GIMP never interpolates indexed images, so scaling one as
+                        # it is gives hard, blocky edges.
+                        self._check_ok(loaded.convert_rgb(), "Converting the image to RGB")
+                    if scale == "fit":
+                        factor = min(canvas_w / src_w, canvas_h / src_h)
+                        self._check_ok(loaded.scale(max(1, round(src_w * factor)),
+                                                    max(1, round(src_h * factor))),
+                                       "Scaling the image")
+                    elif scale == "canvas":
+                        self._check_ok(loaded.scale(canvas_w, canvas_h), "Scaling the image")
+                    layer = self._check_item(Gimp.Layer.new_from_visible(loaded, target, layer_name),
+                                             "Creating a layer from the file")
+                finally:
+                    # The temporary image never had a display, so delete() removes it.
+                    loaded.delete()
+                w, h = layer.get_width(), layer.get_height()
+                x = int(offset_x) if offset_x is not None else (canvas_w - w) // 2
+                y = int(offset_y) if offset_y is not None else (canvas_h - h) // 2
+                self._check_ok(layer.set_offsets(x, y), "Moving the layer")
+                self._check_ok(target.insert_layer(layer, None, position), "Inserting the layer")
+                inserted = True
+            except Exception:
+                # A layer that never made it into the target must be freed here.
+                # (Its get_image() is already the target, so it can't tell us.)
+                if layer is not None and not inserted:
+                    try:
+                        layer.delete()
+                    except Exception:
+                        pass
+                raise
+            Gimp.displays_flush()
+            _, actual_x, actual_y = layer.get_offsets()
+            return {
+                "status": "success",
+                "results": {
+                    "layer_name":    layer.get_name(),
+                    "layer_id":      layer.get_id(),
+                    "width":         layer.get_width(),
+                    "height":        layer.get_height(),
+                    "offset_x":      actual_x,
+                    "offset_y":      actual_y,
+                    "position":      target.get_item_position(layer),
+                    "source_width":  src_w,
+                    "source_height": src_h,
+                }
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
     def _save_xcf(self, params):
         """Save image as XCF."""
         try:
@@ -2988,33 +3095,57 @@ class MCPPlugin(Gimp.PlugIn):
             blend_mode  = params.get("blend_mode", "NORMAL")
             position    = int(params.get("position", -1))
             fill        = params.get("fill", "transparent")
+            # GIMP treats any value below -1 as "above the selected layer, but never
+            # inside a group", which no client would guess, so allow only -1.
+            if position < -1:
+                return {"status": "error",
+                        "error": f"position must be -1 (above the selected layer) "
+                                 f"or >= 0 (0 = top), got {position}"}
             image = self._get_image(image_index)
-            width  = int(params.get("width")  or image.get_width())
-            height = int(params.get("height") or image.get_height())
+            width  = params.get("width")
+            height = params.get("height")
+            width  = int(image.get_width() if width is None else width)
+            height = int(image.get_height() if height is None else height)
+            for dimension, value in (("width", width), ("height", height)):
+                if not 1 <= value <= Gimp.MAX_IMAGE_SIZE:
+                    return {"status": "error",
+                            "error": f"{dimension} must be between 1 and "
+                                     f"{Gimp.MAX_IMAGE_SIZE}, got {value}"}
             mode   = self._blend_mode_from_string(blend_mode)
-            # Determine layer type
-            base_type  = image.get_base_type()
-            layer_type = Gimp.ImageType.RGBA_IMAGE if base_type == Gimp.ImageBaseType.RGB else Gimp.ImageType.GRAYA_IMAGE
-            image.undo_group_start()
+            # The layer type must match the image's base type, or GIMP refuses the insert.
+            layer_type = {
+                Gimp.ImageBaseType.RGB:     Gimp.ImageType.RGBA_IMAGE,
+                Gimp.ImageBaseType.GRAY:    Gimp.ImageType.GRAYA_IMAGE,
+                Gimp.ImageBaseType.INDEXED: Gimp.ImageType.INDEXEDA_IMAGE,
+            }[image.get_base_type()]
+            # The layer is filled before it is inserted, so insert_layer() is the only
+            # change to the image: a failure leaves it untouched (no undo step, not
+            # marked dirty). Drawable.fill works on a layer not yet in an image, fills
+            # all of it whatever the selection, and ignores the context's opacity and
+            # paint mode.
+            layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
             try:
-                layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
-                image.insert_layer(layer, None, position)
-                self._push_paint_context()
-                try:
-                    if fill.lower() == "transparent":
-                        layer.add_alpha()
-                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT),
-                                       "Filling the new layer")
-                    else:
-                        bg = Gegl.Color.new(fill)
+                if fill.lower() == "transparent":
+                    self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new layer")
+                else:
+                    bg = Gegl.Color.new(fill)
+                    Gimp.context_push()
+                    try:
                         Gimp.context_set_background(bg)
-                        self._check_ok(Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND),
+                        self._check_ok(layer.fill(Gimp.FillType.BACKGROUND),
                                        "Filling the new layer")
-                finally:
-                    Gimp.context_pop()
-            finally:
-                image.undo_group_end()
+                    finally:
+                        Gimp.context_pop()
+                self._check_ok(image.insert_layer(layer, None, position), "Inserting the layer")
+            except Exception:
+                # A layer that never made it into the image belongs to none; free it.
+                try:
+                    layer.delete()
+                except Exception:
+                    pass
+                raise
             Gimp.displays_flush()
+            parent = layer.get_parent()
             return {
                 "status": "success",
                 "results": {
@@ -3022,7 +3153,12 @@ class MCPPlugin(Gimp.PlugIn):
                     "layer_id":   layer.get_id(),
                     "width":      width,
                     "height":     height,
-                    "position":   position,
+                    # Where the layer landed, which can differ from the request: -1
+                    # depends on the selection, and a floating selection stays on top.
+                    "position":   image.get_item_position(layer),
+                    # -1 can put the layer inside a group; then position is its index
+                    # in that group. GIMP keeps item names unique within an image.
+                    "parent":     parent.get_name() if parent else None,
                 }
             }
         except Exception as e:
@@ -3125,11 +3261,9 @@ class MCPPlugin(Gimp.PlugIn):
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
-            image.undo_group_start()
-            try:
-                image.reorder_item(layer, None, new_position)
-            finally:
-                image.undo_group_end()
+            # One call, so one undo step without an undo group; an empty group
+            # would mark the image dirty when GIMP refuses the move.
+            self._check_ok(image.reorder_item(layer, None, new_position), "Moving the layer")
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
@@ -3231,6 +3365,17 @@ class MCPPlugin(Gimp.PlugIn):
             fill_type   = (params.get("fill_type") or "foreground").lower()
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
+            # With no active selection GIMP applies edit_clear()/edit_fill() to
+            # the ENTIRE layer. That silently destroys image content, so refuse
+            # it: whole-layer fills are what the fill_layer tool is for.
+            _ok, non_empty, _x1, _y1, _x2, _y2 = Gimp.Selection.bounds(image)
+            if not non_empty:
+                return {
+                    "status": "error",
+                    "error": ("No active selection on this image: with no selection GIMP applies "
+                              "the fill to the entire layer. Create a selection first, or use the "
+                              "fill_layer tool for a whole-layer fill."),
+                }
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             self._push_paint_context()
@@ -3508,27 +3653,67 @@ class MCPPlugin(Gimp.PlugIn):
     # CATEGORY 7 — Text
     # =========================================================================
 
-    def _resolve_font(self, name):
-        """Resolve a font name to a Gimp.Font."""
-        if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
-            return None
-
-        font_obj = Gimp.Font.get_by_name(name)
-        if font_obj is not None:
-            return font_obj
-
-        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
-        # the 3.2 equivalent is "Sans-serif".
-        for alias in (name + "-serif", name + " Regular",
-                      name.replace(" ", "-"),
-                      "Sans-serif", "Serif", "Monospace"):
-            font_obj = Gimp.Font.get_by_name(alias)
+    def _default_font(self):
+        """Return the first available default or installed Gimp.Font, or None."""
+        for fallback in ("Sans-serif", "Serif", "Monospace"):
+            font_obj = Gimp.Font.get_by_name(fallback)
             if font_obj is not None:
                 return font_obj
 
         raw = Gimp.fonts_get_list("")
-        flist = list(raw[1]) if isinstance(raw, tuple) and len(raw) > 1 else list(raw)
+        if isinstance(raw, tuple):
+            flist = list(raw[1]) if len(raw) > 1 else []
+        else:
+            flist = list(raw)
         return flist[0] if flist else None
+
+    def _resolve_font(self, name):
+        """Resolve a font name to (Gimp.Font, substituted), or (None, False).
+
+        Surrounding whitespace is stripped, and an empty name selects the
+        default font without reporting a substitution. Exact and GIMP 2.x alias
+        matches return substituted=False; falling back to a default or the first
+        installed font for an unknown name returns substituted=True.
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"font must be a string, got {type(name).__name__}")
+        if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
+            return None, False
+
+        name = name.strip()
+        if not name:
+            return self._default_font(), False
+
+        font_obj = Gimp.Font.get_by_name(name)
+        if font_obj is not None:
+            return font_obj, False
+
+        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
+        # the 3.2 equivalent is "Sans-serif".
+        for alias in (name + "-serif", name + " Regular",
+                      name.replace(" ", "-")):
+            if alias == name:
+                continue
+            font_obj = Gimp.Font.get_by_name(alias)
+            if font_obj is not None:
+                return font_obj, False
+
+        font_obj = self._default_font()
+        return (font_obj, True) if font_obj is not None else (None, False)
+
+    def _font_result_fields(self, requested, font_obj, substituted):
+        """Build the font result fields for add_text and edit_text."""
+        applied = font_obj.get_name()
+        fields = {"font": applied}
+        clean_requested = requested.strip()
+        if clean_requested and clean_requested != applied:
+            fields["requested_font"] = clean_requested
+        if substituted:
+            fields["warning"] = (
+                f"Font {clean_requested!r} not found; used {applied!r}. "
+                "See list_fonts for installed fonts."
+            )
+        return fields
 
     def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
         """Create a text layer via Gimp.TextLayer.new."""
@@ -3599,11 +3784,20 @@ class MCPPlugin(Gimp.PlugIn):
             text_str    = params.get("text", "")
             x           = int(params.get("x", 0))
             y           = int(params.get("y", 0))
-            font        = params.get("font", "Sans")
+            font        = params.get("font")
+            if font is None:
+                font = "Sans-serif"
             size        = int(params.get("size", 24))
             color_str   = params.get("color", "black")
 
             image      = self._get_image(image_index)
+            font_obj, substituted = self._resolve_font(font)
+            if font_obj is None:
+                return {
+                    "status": "error",
+                    "error":  f"add_text: no font found for {font!r}",
+                }
+
             before_ids = {lyr.get_id() for lyr in image.get_layers()}
             text_layer = None
 
@@ -3611,13 +3805,11 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                font_obj = self._resolve_font(font)
-                if font_obj is not None:
-                    text_layer = self._create_text_layer_native(
-                        image, text_str, font_obj, size, x, y, color_str)
-                    if text_layer is None:
-                        self._create_text_layer_pdb(
-                            image, text_str, font_obj, size, x, y)
+                text_layer = self._create_text_layer_native(
+                    image, text_str, font_obj, size, x, y, color_str)
+                if text_layer is None:
+                    self._create_text_layer_pdb(
+                        image, text_str, font_obj, size, x, y)
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
@@ -3633,16 +3825,15 @@ class MCPPlugin(Gimp.PlugIn):
                     "error":  "add_text: no text layer was created (no PDB procedure succeeded)",
                 }
 
-            return {
-                "status": "success",
-                "results": {
-                    "layer_name":  text_layer.get_name(),
-                    "layer_id":    text_layer.get_id(),
-                    "text_width":  text_layer.get_width(),
-                    "text_height": text_layer.get_height(),
-                    "position":    [x, y],
-                }
+            results = {
+                "layer_name":  text_layer.get_name(),
+                "layer_id":    text_layer.get_id(),
+                "text_width":  text_layer.get_width(),
+                "text_height": text_layer.get_height(),
+                "position":    [x, y],
             }
+            results.update(self._font_result_fields(font, font_obj, substituted))
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -3654,16 +3845,21 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name  = params.get("layer_name", "")
             new_text    = params.get("text", None)
             new_font    = params.get("font", None)
+            # A blank font leaves the font unchanged, as if it were omitted:
+            # clients often send "" for optional arguments.
+            if isinstance(new_font, str) and not new_font.strip():
+                new_font = None
             new_size    = params.get("size", None)
             new_color   = params.get("color", None)
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
             # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
-            # before any edit. _resolve_font falls back to a close match or a
-            # default font, so this only fails if GIMP has no fonts at all.
+            # before any edit. _resolve_font falls back to an alias or a default
+            # font, so this only fails if GIMP has no fonts at all.
             font_obj = None
+            substituted = False
             if new_font is not None:
-                font_obj = self._resolve_font(new_font)
+                font_obj, substituted = self._resolve_font(new_font)
                 if font_obj is None:
                     return {"status": "error",
                             "error": f"edit_text: no font found for {new_font!r}"}
@@ -3699,8 +3895,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.displays_flush()
             results = {"status": "success"}
             if font_obj is not None:
-                # _resolve_font may pick a close match or a fallback, so report it.
-                results["font"] = font_obj.get_name()
+                results.update(self._font_result_fields(new_font, font_obj, substituted))
             return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -3838,7 +4033,7 @@ class MCPPlugin(Gimp.PlugIn):
           1. Duplicate source layer → shadow_layer
           2. Fill it with shadow color (alpha-locked so shape is preserved)
           3. Set opacity and offset
-          4. Gaussian-blur with plug-in-gauss
+          4. Gaussian-blur (plug-in-gauss, GEGL gaussian-blur fallback)
         """
         try:
             from gi.repository import Gegl
@@ -3873,17 +4068,27 @@ class MCPPlugin(Gimp.PlugIn):
                 offs = shadow_layer.get_offsets()
                 shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
 
-                # 4. Blur with plug-in-gauss (always available in GIMP 3.x)
+                # 4. Blur the shadow layer. plug-in-gauss is missing from some
+                # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.
                 if blur_radius > 0:
                     size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
-                    blur_proc = self._lookup_pdb("plug-in-gauss")
-                    cfg = blur_proc.create_config()
-                    cfg.set_property("image",      image)
-                    cfg.set_property("drawable",   shadow_layer)
-                    cfg.set_property("horizontal", size)
-                    cfg.set_property("vertical",   size)
-                    cfg.set_property("method",     0)
-                    self._run_pdb(blur_proc, cfg)
+                    blur_proc = Gimp.get_pdb().lookup_procedure("plug-in-gauss")
+                    if blur_proc:
+                        cfg = blur_proc.create_config()
+                        cfg.set_property("image",      image)
+                        cfg.set_property("drawable",   shadow_layer)
+                        cfg.set_property("horizontal", size)
+                        cfg.set_property("vertical",   size)
+                        cfg.set_property("method",     0)
+                        self._run_pdb(blur_proc, cfg)
+                    else:
+                        # The GEGL filter takes the radius directly, the way
+                        # blur and apply_gaussian_blur pass it.
+                        self._apply_gegl_filter(image, shadow_layer,
+                                                "gegl:gaussian-blur", {
+                                "std-dev-x": blur_radius,
+                                "std-dev-y": blur_radius,
+                            })
 
                 shadow_layer.set_name("Drop Shadow")
             finally:

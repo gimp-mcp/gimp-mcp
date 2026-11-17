@@ -22,6 +22,7 @@ import traceback
 import time
 from pathlib import Path
 from importlib import resources
+from typing import Literal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -764,6 +765,75 @@ def open_image(ctx: Context, file_path: str) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"open_image failed: {e}")
+
+
+@gimp_tool()
+def open_image_as_layer(
+    ctx: Context,
+    file_path: str,
+    image_index: int = 0,
+    layer_name: str | None = None,
+    position: int = 0,
+    scale: Literal["none", "fit", "canvas"] = "none",
+    offset_x: int | None = None,
+    offset_y: int | None = None,
+) -> dict:
+    """Import an image file as a new layer in an open image.
+
+    Use this to bring another image (texture, reference, cutout, background) into
+    the image being edited. No new image window is opened. Unlike GIMP's
+    File > Open as Layers, which keeps a file's layers separate, the file's visible
+    content always becomes one new layer: a multi-layer file (XCF, PSD, ORA) is
+    merged, and transparency is kept. The layer is converted to the image's color
+    mode; in an indexed image its colors are reduced to that image's palette, so
+    convert the image to RGB first to keep them. An animated GIF loads as one
+    visible layer per frame, so the imported layer is all frames stacked (for a GIF
+    of opaque full-size frames, that looks like the last frame); multi-page files
+    may behave the same way. The new layer becomes the selected layer, so tools
+    that default to the selected layer act on it. If the image has a floating
+    selection (a user can make one in GIMP), anchor it first, with call_api:
+    Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+    isn't selected, and position 0 puts it second from the top (the result reports
+    the real position).
+
+    Parameters:
+    - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.);
+      a leading "~" is expanded. Relative paths are rejected.
+    - image_index: Index of the image to add the layer to (default 0)
+    - layer_name: Name for the new layer (default: the file name without extension).
+      GIMP adds a suffix such as " #1" if the name is taken; the result has the real name.
+    - position: Stack position, 0 = top (default); larger values go further down.
+      A value past the bottom puts the layer at the bottom.
+    - scale: "none" = the file's own size (default); "fit" = scale up or down to fit
+      inside the canvas, keeping the aspect ratio; "canvas" = stretch to the canvas size
+    - offset_x, offset_y: Position of the layer's top-left corner on the canvas.
+      Each one left out is centered on the canvas.
+
+    Returns:
+    - layer_name, layer_id: the new layer
+    - width, height: layer size after scaling
+    - offset_x, offset_y: where the layer was placed
+    - position: the layer's actual stack position (0 = top)
+    - source_width, source_height: the file's own dimensions
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("open_image_as_layer", {
+            # Expanded here: a Snap GIMP's own home directory is not the user's.
+            "file_path": os.path.expanduser(file_path),
+            "image_index": image_index,
+            "layer_name": layer_name,
+            "position": position,
+            "scale": scale,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+        })
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"open_image_as_layer failed: {e}")
 
 
 @gimp_tool()
@@ -1660,14 +1730,31 @@ def create_layer(
 
     Parameters:
     - name: Layer name (default "New Layer")
-    - width, height: Layer dimensions; defaults to image dimensions
-    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
+    - width, height: Layer dimensions in pixels, from 1 to 524288 inclusive;
+      omitted or None values use the corresponding image dimension. Zero is invalid.
+    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
+      it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
-    - position: Stack position — -1 = top (default), 0 = bottom
+    - position: 0 or more = index among the image's top-level layers, counted from
+      the top (0 = top); a value past the bottom puts the layer at the bottom.
+      -1 (default) = directly above the selected layer, inside its group if it is in
+      one; if a group is selected, at the top inside it. With several selected:
+      above the highest if they are non-group layers with the same parent; at the
+      top inside a selected group if the others are non-group layers directly
+      inside it; otherwise, or with nothing selected, at the top of the image.
+      Other negative values are rejected. Prefer 0 or more: other tools can't find a
+      layer inside a group by layer_name.
+      The new layer becomes the selected layer. If the image has a floating
+      selection (a user can make one in GIMP), anchor it first, with call_api:
+      Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+      isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, width, height, position}
+    Returns: {layer_name, layer_id, width, height, position, parent}; position is where
+    the layer landed (0 = top), which can differ from the value passed in. parent is
+    the name of the layer group it went into (only possible with -1), and position is
+    then its index in that group; null at the top level.
     """
     try:
         conn = get_gimp_connection()
@@ -1826,8 +1913,18 @@ def reorder_layer(
     """Move a layer to a new stack position.
 
     Parameters:
-    - new_position: Target stack index (0 = bottom)
-    - layer_name / layer_index: Identify the layer (defaults to active layer)
+    - new_position: Target stack index among the image's top-level layers, counted
+      from the top: 0 = top, 1 = second from the top, and so on; a value past the
+      bottom moves the layer to the bottom, and a negative value moves it to the top.
+      A layer inside a layer group is moved out of the group.
+    - layer_name / layer_index: Identify the layer (defaults to the selected layer;
+      if several are selected, any one of them, so select only one). Both find only
+      top-level layers. To move a grouped layer, select it and leave both out, e.g.
+      via call_api: image.set_selected_layers([layer]). A layer just made by
+      create_layer is already selected. But while the image has a floating
+      selection, that is always the selected layer, so leaving both out moves it.
+      Anchor it before calling create_layer: anchoring afterwards selects the layer
+      it was pasted on, not the new one.
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -1948,6 +2045,9 @@ def fill_selection(
     layer_name: str | None = None
 ) -> dict:
     """Fill the current selection with a color or fill type.
+
+    Returns an error when nothing is selected; use fill_layer to fill a
+    whole layer.
 
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
@@ -2241,7 +2341,7 @@ def add_text(
     text: str,
     x: int = 0,
     y: int = 0,
-    font: str = "Sans",
+    font: str = "Sans-serif",
     size: int = 24,
     color: str = "black",
     image_index: int = 0
@@ -2251,12 +2351,16 @@ def add_text(
     Parameters:
     - text: The text string to render
     - x, y: Position of the text layer's top-left corner (default 0, 0)
-    - font: Font family name — "Sans" (default), "Serif", etc.
+    - font: Font name, as listed by list_fonts (default "Sans-serif"). Common
+      GIMP 2 aliases (such as "Sans") resolve to their GIMP 3 names; an unknown
+      name falls back to a default font and adds a warning to the result.
     - size: Font size in pixels (default 24)
     - color: Text color (CSS name, hex, or rgb() string; default "black")
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, text_width, text_height, position}
+    Returns: {layer_name, layer_id, text_width, text_height, position, font},
+    plus requested_font when it differs from font and warning when a fallback
+    font was substituted.
     """
     try:
         conn = get_gimp_connection()
@@ -2288,13 +2392,16 @@ def edit_text(
     Parameters:
     - layer_name: Name of the text layer to edit
     - text: New text content (omit to leave unchanged)
-    - font: New font name, as listed by list_fonts (omit to leave unchanged). An unknown
-      name falls back to a close match or a default font.
+    - font: New font name, as listed by list_fonts (omit, or pass an empty name,
+      to leave unchanged). Common GIMP 2 aliases resolve to their GIMP 3 names; an unknown name falls
+      back to a default font and adds a warning to the result.
     - size: New font size in pixels (omit to leave unchanged)
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns {status}, plus {font} with the font actually applied when font was given.
+    Returns {status}, plus font (the applied font) when a font name was given,
+    requested_font when it differs from font, and warning when a fallback font
+    was substituted.
     """
     try:
         conn = get_gimp_connection()
