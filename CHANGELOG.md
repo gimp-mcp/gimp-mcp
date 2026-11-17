@@ -13,6 +13,8 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
 ### Added
 - `open_image_as_layer` imports an image file as a new layer in an open image, without
   opening it in its own window. A multi-layer file is merged into one layer with its
@@ -167,7 +169,8 @@ First release on PyPI as `gimp-mcp-plugin` (#96).
 - `get_pixel_color` returns sRGB instead of linear values (#55).
 - The plugin no longer crashes after a client-side timeout (#82).
 
-[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.1.0...v0.2.0
