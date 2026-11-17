@@ -3675,16 +3675,21 @@ class MCPPlugin(Gimp.PlugIn):
                      else Gimp.GradientType.LINEAR)
 
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 Gimp.context_set_foreground(self._color(color1))
                 Gimp.context_set_background(self._color(color2))
                 Gimp.context_set_gradient_fg_bg_rgb()
+                # The gradient fill also uses these context settings, which an
+                # earlier call may have changed.
+                Gimp.context_set_gradient_reverse(False)
+                Gimp.context_set_gradient_repeat_mode(Gimp.RepeatMode.NONE)
                 # (gradient_type, offset, supersample, supersample_max_depth,
                 #  supersample_threshold, dither, x1, y1, x2, y2)
-                drawable.edit_gradient_fill(
+                # Returns False when GIMP rejects the fill (e.g. on a layer group).
+                self._check_ok(drawable.edit_gradient_fill(
                     gtype, 0.0, False, 3, 0.2, True, x1, y1, x2, y2
-                )
+                ), "Filling the gradient")
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
