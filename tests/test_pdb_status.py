@@ -720,7 +720,14 @@ def main():
             ({"region": dict(region, origin_x=-1)}, "'origin_x' must be at least 0"),
             ({"region": dict(region, max_width=0, max_height=5)}, "'max_width' must be at least 1"),
             ({"region": dict(region, max_width=5, max_height=-2)}, "'max_height' must be at least 1"),
-            ({"region": {"origin_x": 0, "origin_y": 0}}, "all parameters are required"),
+            ({"region": {"origin_x": 0, "origin_y": 0}}, "(missing: width, height)"),
+            # A region without its rectangle is an error, never the full image
+            ({"region": {}}, "(missing: origin_x, origin_y, width, height)"),
+            ({"region": {"max_width": 10, "max_height": 10}},
+             "(missing: origin_x, origin_y, width, height)"),
+            ({"max_width": 10, "region": {"max_height": 10}},
+             "(missing: origin_x, origin_y, width, height)"),
+            ({"region": dict(region, height=None)}, "(missing: height)"),
             ({"region": dict(region, origin_x=95)}, "Region bounds invalid")):
         TEMP_IMAGES.clear()
         r = plugin._get_current_image_bitmap(params)

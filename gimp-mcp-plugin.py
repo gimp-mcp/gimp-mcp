@@ -879,6 +879,9 @@ class MCPPlugin(Gimp.PlugIn):
 
             # Extract region parameters if provided
             region = params.get("region")
+            # Any region given, even {} or one with only scaling bounds, asks for a
+            # region and must name its rectangle; it never means the full image
+            region_requested = region is not None
             if region is None:
                 region = {}
             if not isinstance(region, dict):
@@ -950,13 +953,16 @@ class MCPPlugin(Gimp.PlugIn):
                 }
 
             # Validate region before creating any temporary image
-            region_requested = any(param is not None for param in [origin_x, origin_y, region_width, region_height])
             if region_requested:
                 # Validate region parameters
-                if origin_x is None or origin_y is None or region_width is None or region_height is None:
+                missing = [key for key, value in [("origin_x", origin_x), ("origin_y", origin_y),
+                                                  ("width", region_width), ("height", region_height)]
+                           if value is None]
+                if missing:
                     return {
                         "status": "error",
                         "error": "For region selection, all parameters are required: origin_x, origin_y, width, height"
+                                 f" (missing: {', '.join(missing)})"
                     }
 
                 # Validate region bounds
