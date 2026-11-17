@@ -40,6 +40,9 @@ right command when the versions differ.
   is below 1 (`get_image_bitmap`'s `max_width` / `max_height`, or a negative `max_size` for
   `get_state_snapshot`, where 0 still means no scaling). Before, these returned a blank or wrong
   image, a misleading error or a division by zero.
+- `get_image_bitmap` scales by `max_width` or `max_height` alone. Before, scaling needed both,
+  and a single bound returned the image at full size. A region with one bound of its own was
+  left unscaled, or scaled by the top-level bounds when both of those were given.
 - `create_layer` rejects width or height outside 1–524288 with an error naming the
   dimension and value. Zero no longer silently uses the image size (#135).
 - `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on

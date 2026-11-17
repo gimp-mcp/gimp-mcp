@@ -653,35 +653,52 @@ def main():
     # Scaling fits the region inside the bounds, keeps its aspect ratio, and
     # never goes below 1 pixel. The region's own bounds win over the top-level
     # ones, which scale a region without bounds (get_state_snapshot relies on
-    # that). The temporary image has the region's size.
+    # that). Either bound may be given alone and limits only its own dimension;
+    # a region with one bound of its own ignores the top-level ones. The
+    # temporary image has the region's (or the full image's) size; expected
+    # None means no scaling.
     # A working PNG export, so the success-path cases below can require success.
     png_export = {"file-png-export": (SUCCESS, None)}
     original = FakeImage.get_width, FakeImage.get_height, FakeImage.scale
-    for (w, h), top_bounds, region_bounds, expected in (
-            ((100, 60), None, (50, 50), (50, 30)),
-            ((60, 100), None, (50, 50), (30, 50)),
-            ((1, 100), None, (50, 50), (1, 50)),
-            ((100, 1), None, (50, 50), (50, 1)),
-            ((40, 30), None, (100, 100), (100, 75)),
-            ((40, 20), (20, 20), None, (20, 10)),
-            ((40, 20), (20, 20), (8, 8), (8, 4))):
+    for use_region, (w, h), top_bounds, region_bounds, expected in (
+            (True, (100, 60), None, (50, 50), (50, 30)),
+            (True, (60, 100), None, (50, 50), (30, 50)),
+            (True, (1, 100), None, (50, 50), (1, 50)),
+            (True, (100, 1), None, (50, 50), (50, 1)),
+            (True, (40, 30), None, (100, 100), (100, 75)),
+            (True, (40, 20), (20, 20), None, (20, 10)),
+            (True, (40, 20), (20, 20), (8, 8), (8, 4)),
+            (True, (40, 20), None, (10, None), (10, 5)),
+            (True, (40, 20), None, (None, 5), (10, 5)),
+            (True, (40, 20), (8, 8), (None, 5), (10, 5)),
+            (True, (40, 20), (10, None), None, (10, 5)),
+            (False, (1000, 500), None, None, None),
+            (False, (1000, 500), (100, None), None, (100, 50)),
+            (False, (1000, 500), (None, 100), None, (200, 100)),
+            (False, (1000, 500), (100, 100), None, (100, 50)),
+            (False, (500, 1000), (100, None), None, (100, 200))):
         scaled = []
-        params = {"region": {"origin_x": 0, "origin_y": 0, "width": w, "height": h}}
-        if top_bounds:
-            params.update(max_width=top_bounds[0], max_height=top_bounds[1])
-        if region_bounds:
-            params["region"].update(max_width=region_bounds[0], max_height=region_bounds[1])
-        FakeImage.get_width = lambda self, w=w: 100 if self is OPEN_IMAGE else w
-        FakeImage.get_height = lambda self, h=h: 100 if self is OPEN_IMAGE else h
+        params = {}
+        if use_region:
+            params["region"] = {"origin_x": 0, "origin_y": 0, "width": w, "height": h}
+        for target, bounds in ((params, top_bounds), (params.get("region"), region_bounds)):
+            for key, value in zip(("max_width", "max_height"), bounds or ()):
+                if value is not None:
+                    target[key] = value
+        open_w, open_h = (100, 100) if use_region else (w, h)
+        FakeImage.get_width = lambda self, w=w, o=open_w: o if self is OPEN_IMAGE else w
+        FakeImage.get_height = lambda self, h=h, o=open_h: o if self is OPEN_IMAGE else h
         FakeImage.scale = lambda self, *size, scaled=scaled: scaled.append(size) or True
         scenario(png_export)
         try:
             r = plugin._get_current_image_bitmap(params)
         finally:
             FakeImage.get_width, FakeImage.get_height, FakeImage.scale = original
-        check(f"bitmap preview scales a {w}x{h} region with bounds {top_bounds} (top level) and "
-              f"{region_bounds} (region) to {expected[0]}x{expected[1]}",
-              None if r["status"] == "success" and scaled == [expected]
+        what = "region" if use_region else "full image"
+        result = f"{expected[0]}x{expected[1]}" if expected else "unscaled"
+        check(f"bitmap preview of a {w}x{h} {what} with bounds {top_bounds} (top level) and "
+              f"{region_bounds} (region) is {result}",
+              None if r["status"] == "success" and scaled == ([expected] if expected else [])
               else f"got {r.get('error', r['status'])}, scaled to {scaled}")
 
     # The bitmap preview rejects bad arguments and images with nothing visible

@@ -399,12 +399,13 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
 
     Parameters:
     - image_index: Which open image to fetch (default: 0 = most recent)
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved),
-      at least 1. Omit for full resolution.
+    - max_width, max_height: Bounds for scaling (aspect-ratio preserved), at least 1.
+      Either can be given alone. Omit both for full resolution.
     - region: Dictionary with keys:
         - origin_x, origin_y: Top-left corner of region to extract
         - width, height: Dimensions of region to extract, at least 1
-        - max_width, max_height: Optional scaling for the extracted region, at least 1
+        - max_width, max_height: Optional scaling for the extracted region, at least 1;
+          either one replaces the top-level bounds
 
     The bitmap is the visible composite (hidden and 0%-opacity layers are left out,
     blend modes and layer filters apply), as GIMP displays it: a visible channel,

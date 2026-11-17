@@ -292,11 +292,11 @@ image = get_image_bitmap()
 
 **Usage Modes:**
 1. **Full Image:** No parameters - returns full image
-2. **Full Image Scaled:** `max_width` + `max_height` - scales full image to fit within bounds
+2. **Full Image Scaled:** `max_width` and/or `max_height` - scales full image to fit within bounds
 3. **Region Extract:** `region` with `origin_x`, `origin_y`, `width`, `height` - extracts specific region
-4. **Region Extract + Scale:** `region` also with `max_width` + `max_height` - extracts and scales
+4. **Region Extract + Scale:** `region` also with `max_width` and/or `max_height` - extracts and scales
 
-**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion.
+**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion. A bound given alone limits only its own dimension. A region with either bound of its own ignores the top-level bounds.
 
 **Response Format:**
 ```json

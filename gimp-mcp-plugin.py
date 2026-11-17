@@ -993,23 +993,20 @@ class MCPPlugin(Gimp.PlugIn):
                 target_width = current_width
                 target_height = current_height
                 
-                # Determine scaling target
-                if scaled_to_width is not None and scaled_to_height is not None:
-                    # Region scaling - use scaled_to dimensions
+                # Determine scaling target: a region's own bounds, or else the
+                # top-level ones. Either bound may be given alone and limits
+                # only its own dimension
+                if scaled_to_width is not None or scaled_to_height is not None:
                     max_w, max_h = scaled_to_width, scaled_to_height
-                elif max_width is not None and max_height is not None:
-                    # Full image scaling - use max dimensions
-                    max_w, max_h = max_width, max_height
                 else:
-                    max_w = max_h = None
-                
+                    max_w, max_h = max_width, max_height
+
                 # Apply center inside scaling if target dimensions provided
-                if max_w is not None and max_h is not None:
+                if max_w is not None or max_h is not None:
                     # Calculate center inside scaling
                     aspect_ratio = current_width / current_height
-                    max_aspect_ratio = max_w / max_h
-                    
-                    if aspect_ratio > max_aspect_ratio:
+
+                    if max_h is None or (max_w is not None and aspect_ratio > max_w / max_h):
                         # Width is the limiting factor
                         target_width = max_w
                         target_height = max(1, int(max_w / aspect_ratio))
