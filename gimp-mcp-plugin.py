@@ -214,10 +214,10 @@ class MCPPlugin(Gimp.PlugIn):
         self._restart_requested = threading.Event()
         self._restart_done = threading.Event()
         self._restart_result = None
-        # Track displays we create, keyed by image id. GIMP 3.2 exposes no
-        # Gimp.get_displays()/Display.get_image(), so close_image cannot find an
-        # image's display any other way (and image.delete() fails while a display
-        # still references the image).
+        # Displays opened by _create_display, keyed by image id; values are
+        # always Gimp.Display objects. GIMP 3.2 exposes no Gimp.get_displays()
+        # or Display.get_image(), so close_image and set_active_image cannot
+        # find an image's window any other way.
         self._displays = {}
 
     def do_set_i18n(self, procname):
@@ -1940,12 +1940,17 @@ class MCPPlugin(Gimp.PlugIn):
         Headless runs (gimp -i) have no display backend: Gimp.Display.new()
         raises "constructor returned NULL" there even though the image itself
         is fine, so a failure here must not fail the calling operation.
+
+        The display is recorded in self._displays (image id -> Gimp.Display):
+        GIMP 3.2 can't list an image's displays, so close_image and
+        set_active_image can only reach windows the plugin opened.
         """
         try:
-            Gimp.Display.new(image)
+            display = Gimp.Display.new(image)
         except Exception as display_err:
             print(f"[MCP] Display creation skipped (headless?): {display_err}")
             return False
+        self._displays[image.get_id()] = display
         # The display exists at this point; a failed refresh must not make the
         # caller report that no display was opened.
         try:
@@ -4632,17 +4637,24 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = int(params.get("image_index", 0))
             image = self._get_image(image_index)
-            displays = Gimp.get_displays()
-            for display in displays:
-                try:
-                    if display.get_image().get_id() == image.get_id():
-                        Gimp.set_default_context()
-                        display.present()
-                        break
-                except Exception:
-                    pass
+            image_id = image.get_id()
+            # GIMP 3.2 has no Gimp.get_displays(), so only a window the plugin
+            # opened (see _create_display) can be raised.
+            display = self._displays.get(image_id)
+            if display is not None and not display.is_valid():
+                # Its window was closed by hand.
+                del self._displays[image_id]
+                display = None
+            if display is None:
+                return {"status": "error", "error": (
+                    f"Image {image_id} has no window opened by the plugin (it was opened "
+                    "in GIMP directly, its window was closed, or GIMP runs without a "
+                    "display), so it can't be raised from here. Use GIMP's Windows menu "
+                    "to switch to it."
+                )}
+            display.present()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success", "image_id": image.get_id()}}
+            return {"status": "success", "results": {"status": "success", "image_id": image_id}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4722,20 +4734,21 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg.set_property("image", image)
                 cfg.set_property("file", gio_file)
                 self._run_pdb(proc, cfg)
-            # GIMP 3.2 has no Gimp.get_displays() and Gimp.Display has no
-            # get_image(), so an image's display can only be found via the
-            # registry we populate in open_image/new_canvas. gimp_image_delete
-            # is a no-op while a display still references the image, so drop the
-            # tracked display first.
-            img_id = image.get_id()
-            disp = self._displays.pop(img_id, None)
-            if disp is not None:
+            # image.delete() leaves an image that still has a display open, so
+            # close the window the plugin opened first (see _create_display).
+            # Deleting an image's last display deletes the image too, so the
+            # image is only deleted here if it is still valid afterwards;
+            # deleting it again would make GIMP log an "invalid ID" error.
+            display = self._displays.pop(image.get_id(), None)
+            if display is not None and display.is_valid():
                 try:
-                    disp.delete()
-                except Exception:
-                    pass
-            image.delete()
+                    display.delete()
+                except Exception as e:
+                    print(f"[MCP] close_image: deleting the display failed: {e}")
+            if image.is_valid():
+                image.delete()
             Gimp.displays_flush()
+            # Never report success while the image is still open.
             if image.is_valid():
                 return {"status": "error", "error": (
                     "Could not close image: it still has an open display not tracked "

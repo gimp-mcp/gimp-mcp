@@ -2905,7 +2905,11 @@ def list_images(ctx: Context) -> dict:
 
 @gimp_tool()
 def set_active_image(ctx: Context, image_index: int) -> dict:
-    """Raise a specific image to the front / make it active in GIMP.
+    """Raise a specific image's window to the front in GIMP.
+
+    Only windows the plug-in opened (open_image, new_canvas) can be raised.
+    For an image opened in GIMP directly, or whose window was closed, this
+    fails with an error; other tools still work on it by image_index.
 
     Parameters:
     - image_index: Index of the image to activate (from list_images)
@@ -2925,15 +2929,22 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
 
 @gimp_tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable undo, so this
-    tool always returns an error. Use Edit > Undo (Ctrl+Z) in GIMP, or re-open
-    the source file to revert.
+    """NOT SUPPORTED on GIMP 3.x: this tool always fails.
+
+    GIMP 3.x gives plug-ins no way to perform an undo: its API only groups
+    operations into undo steps. The call raises with an explanation rather
+    than undoing anything (scriptable undo is tracked in issue #86).
+
+    Do not plan a workflow around being able to undo. Instead:
+    - work on a copy (duplicate_layer) and delete it to revert, or
+    - check with get_state_snapshot before a change that is hard to reverse.
+
+    A human can still press Ctrl+Z in GIMP; the plug-in wraps each operation
+    in an undo group, so one Ctrl+Z reverts one whole operation.
 
     Parameters:
     - steps: Ignored (kept for client compatibility)
     - image_index: Ignored (kept for client compatibility)
-
-    Returns: always raises with an explanatory error.
     """
     try:
         conn = get_gimp_connection()
@@ -2948,14 +2959,15 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
 
 @gimp_tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable redo, so this
-    tool always returns an error. Use Edit > Redo (Ctrl+Y) in GIMP.
+    """NOT SUPPORTED on GIMP 3.x: this tool always fails.
+
+    Same limitation as undo: GIMP 3.x gives plug-ins no way to perform a
+    redo. The call raises with an explanation rather than redoing anything.
+    A human can still press Ctrl+Y in GIMP.
 
     Parameters:
     - steps: Ignored (kept for client compatibility)
     - image_index: Ignored (kept for client compatibility)
-
-    Returns: always raises with an explanatory error.
     """
     try:
         conn = get_gimp_connection()
@@ -3004,6 +3016,10 @@ def close_image(
     save_first: bool = False
 ) -> dict:
     """Close an image, optionally saving as XCF first.
+
+    Closes images whose window the plug-in opened (open_image, new_canvas) or
+    that have no window. An image with a window opened in GIMP directly can't
+    be closed from here: this fails with an error and the image stays open.
 
     Parameters:
     - image_index: Index of the image to close (default 0)
