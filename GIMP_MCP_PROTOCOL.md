@@ -282,20 +282,19 @@ image = get_image_bitmap()
 **Purpose:** Get the current image as a base64-encoded PNG bitmap with support for region extraction and scaling
 
 **Parameters:**
-- `max_width` (integer, optional): Maximum width for full image scaling (center inside)
-- `max_height` (integer, optional): Maximum height for full image scaling (center inside)
-- `origin_x` (integer, optional): X coordinate for region extraction (requires all region params)
-- `origin_y` (integer, optional): Y coordinate for region extraction (requires all region params)
-- `width` (integer, optional): Width of region to extract (requires all region params)
-- `height` (integer, optional): Height of region to extract (requires all region params)
-- `scaled_to_width` (integer, optional): Target width for scaling extracted region
-- `scaled_to_height` (integer, optional): Target height for scaling extracted region
+- `image_index` (integer, optional): Index of the image to capture as `list_images` numbers it (default 0); the snapshot renders the visible composite, layer filters included and tinted by any visible channel such as Quick Mask, and returns an error when no layer is visible
+- `max_width` (integer, optional): Maximum width for scaling the full image, or a region without its own bounds (center inside), at least 1
+- `max_height` (integer, optional): Maximum height for scaling the full image, or a region without its own bounds (center inside), at least 1
+- `region` (object, optional): Rectangle to extract, with integer keys:
+  - `origin_x`, `origin_y`: Top-left corner, at least 0 (required with `region`)
+  - `width`, `height`: Size of the rectangle, at least 1 (required with `region`)
+  - `max_width`, `max_height` (optional): Bounds for scaling the extracted region (center inside), at least 1
 
 **Usage Modes:**
 1. **Full Image:** No parameters - returns full image
 2. **Full Image Scaled:** `max_width` + `max_height` - scales full image to fit within bounds
-3. **Region Extract:** `origin_x` + `origin_y` + `width` + `height` - extracts specific region
-4. **Region Extract + Scale:** Region params + `scaled_to_width` + `scaled_to_height` - extracts and scales
+3. **Region Extract:** `region` with `origin_x`, `origin_y`, `width`, `height` - extracts specific region
+4. **Region Extract + Scale:** `region` also with `max_width` + `max_height` - extracts and scales
 
 **Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion.
 

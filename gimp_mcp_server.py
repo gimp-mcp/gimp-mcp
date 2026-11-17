@@ -387,7 +387,7 @@ def new_canvas(
 
 
 @gimp_tool()
-def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
+def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None, image_index: int = 0) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
 
     No size restrictions — pass any max_width/max_height you need.
@@ -398,12 +398,18 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
     2. Region extraction with optional scaling (pass region dict)
 
     Parameters:
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved).
-      Omit for full resolution.
+    - image_index: Which open image to fetch (default: 0 = most recent)
+    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved),
+      at least 1. Omit for full resolution.
     - region: Dictionary with keys:
         - origin_x, origin_y: Top-left corner of region to extract
-        - width, height: Dimensions of region to extract
-        - max_width, max_height: Optional scaling for the extracted region
+        - width, height: Dimensions of region to extract, at least 1
+        - max_width, max_height: Optional scaling for the extracted region, at least 1
+
+    The bitmap is the visible composite (hidden and 0%-opacity layers are left out,
+    blend modes and layer filters apply), as GIMP displays it: a visible channel,
+    including Quick Mask, tints it. An image with nothing visible returns an
+    error. The user's selection and clipboard are not changed.
 
     Examples:
     - Full image at full res: get_image_bitmap()
@@ -427,7 +433,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         conn = get_gimp_connection()
         
         # Build parameters for the bitmap request
-        params = {}
+        params = {"image_index": image_index}
         if max_width is not None:
             params["max_width"] = max_width
         if max_height is not None:
@@ -535,13 +541,17 @@ def get_state_snapshot(
 
     Parameters:
     - image_index: Which open image to snapshot (default: 0 = most recent)
-    - max_size: Maximum width/height of the returned preview in pixels (default: 512)
+    - max_size: Maximum width/height of the returned preview in pixels (default: 512,
+                0 = no scaling)
     - region: Optional dict {x, y, width, height} to zoom into a specific area
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - PNG image of the current GIMP canvas state (with alpha if present)
+    - RGBA PNG of the visible composite (hidden and 0%-opacity layers are left out,
+      blend modes and layer filters apply), as GIMP displays it: a visible channel,
+      including Quick Mask, tints it. An image with nothing visible returns an
+      error. The user's selection and clipboard are not changed.
 
     Typical agent workflow:
         1. open_image / new_canvas
@@ -554,6 +564,10 @@ def get_state_snapshot(
     try:
         if label:
             print(f"[snapshot] {label}")
+        # The plug-in would report this as max_width / max_height, which the
+        # caller never passed
+        if max_size is not None and max_size < 0:
+            raise ValueError(f"max_size must be at least 0 (0 means no scaling), got {max_size}")
         conn = get_gimp_connection()
         params: dict = {"image_index": image_index}
         if max_size:

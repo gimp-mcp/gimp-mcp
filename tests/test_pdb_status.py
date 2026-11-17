@@ -54,6 +54,26 @@ class FakeLayer:
     def get_id(self):
         return 7
 
+    # A visible, opaque layer, as the bitmap preview needs one to render
+    def get_visible(self):
+        return True
+
+    def get_opacity(self):
+        return 100.0
+
+    def is_group(self):
+        return False
+
+    def set_offsets(self, *a):
+        CALLS.append(("layer", "set_offsets", a))
+        return True
+
+    def delete(self):
+        CALLS.append(("layer", "delete"))
+
+    def resize_to_image_size(self):
+        return True
+
 
 class FakeValueArray:
     """Stand-in for Gimp.ValueArray as returned by Gimp.Procedure.run()."""
@@ -112,6 +132,7 @@ class FakeDrawable:
         return self.curves_result
 
 
+PRECISIONS = []  # precisions passed to Gimp.Image.new_with_precision
 TEMP_IMAGES = []  # images the plug-in creates (new or duplicate), to check cleanup
 
 
@@ -152,6 +173,9 @@ class FakeImage:
     def get_base_type(self):
         return 0
 
+    def get_precision(self):
+        return 150  # U8_NON_LINEAR
+
     def insert_layer(self, *a):
         pass
 
@@ -170,6 +194,10 @@ class FakeImage:
     def select_ellipse(self, *a):
         CALLS.append(("select", "ellipse"))
 
+    def undo_disable(self):
+        CALLS.append(("image", "undo_disable"))
+        return True
+
     def undo_group_start(self):
         pass
 
@@ -180,7 +208,7 @@ class FakeImage:
         return ["layer"]
 
     def get_layers(self):
-        return ["layer"]
+        return [FakeLayer()]
 
     def get_item_position(self, item):
         return 0
@@ -304,25 +332,30 @@ def install_gi_stub():
                 TEMP_IMAGES.append(img)
                 return img
 
+            @staticmethod
+            def new_with_precision(width, height, base_type, precision):
+                PRECISIONS.append(precision)
+                return Gimp.Image.new(width, height, base_type)
+
+        @staticmethod
+        def Precision(value):
+            return value
+
         class Layer:
             @staticmethod
             def new(*a):
                 return "region-layer"
 
+            @staticmethod
+            def new_from_visible(image, dest_image, name):
+                CALLS.append(("layer", "new_from_visible", image, dest_image))
+                return FakeLayer()
+
         class LayerMode:
             NORMAL = 28
 
-        @staticmethod
-        def edit_copy(drawables):
-            pass
-
-        @staticmethod
-        def edit_paste(drawable, paste_into):
-            return ["floating"]
-
-        @staticmethod
-        def floating_sel_anchor(floating):
-            pass
+        class ImageBaseType:
+            RGB = 0
 
         @staticmethod
         def displays_flush():
@@ -602,20 +635,178 @@ def main():
     r = plugin._batch_resize({"scale_factor": 0.5})
     check("batch_resize reports an error when scaling an open image fails",
           None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
-    # The bitmap preview of a region makes two temporary images; a failed
-    # scale must delete both, and never the open image.
+    # The bitmap preview renders a region into one temporary image and scales
+    # it in place; a failed scale must delete it, and never the open image.
     scenario({})
     TEMP_IMAGES.clear()
     r = plugin._get_current_image_bitmap({"region": {"origin_x": 0, "origin_y": 0, "width": 50,
                                                      "height": 50, "max_width": 10, "max_height": 10}})
-    check("bitmap preview deletes both temporary images, not the open one, when scaling fails",
+    check("bitmap preview deletes its temporary image, not the open one, when scaling fails",
           None if r["status"] == "error" and "Scaling the preview copy" in r["error"]
-          and len(TEMP_IMAGES) == 2 and all(i.deleted for i in TEMP_IMAGES)
+          and len(TEMP_IMAGES) == 1 and all(i.deleted for i in TEMP_IMAGES)
           and not OPEN_IMAGE.deleted
           else f"got {r.get('error', r)}, temp deleted {[i.deleted for i in TEMP_IMAGES]}, "
                f"open deleted {OPEN_IMAGE.deleted}")
     DIRECT_OK["value"] = True
     FakePDB.last_error = None
+
+    # Scaling fits the region inside the bounds, keeps its aspect ratio, and
+    # never goes below 1 pixel. The region's own bounds win over the top-level
+    # ones, which scale a region without bounds (get_state_snapshot relies on
+    # that). The temporary image has the region's size.
+    # A working PNG export, so the success-path cases below can require success.
+    png_export = {"file-png-export": (SUCCESS, None)}
+    original = FakeImage.get_width, FakeImage.get_height, FakeImage.scale
+    for (w, h), top_bounds, region_bounds, expected in (
+            ((100, 60), None, (50, 50), (50, 30)),
+            ((60, 100), None, (50, 50), (30, 50)),
+            ((1, 100), None, (50, 50), (1, 50)),
+            ((100, 1), None, (50, 50), (50, 1)),
+            ((40, 30), None, (100, 100), (100, 75)),
+            ((40, 20), (20, 20), None, (20, 10)),
+            ((40, 20), (20, 20), (8, 8), (8, 4))):
+        scaled = []
+        params = {"region": {"origin_x": 0, "origin_y": 0, "width": w, "height": h}}
+        if top_bounds:
+            params.update(max_width=top_bounds[0], max_height=top_bounds[1])
+        if region_bounds:
+            params["region"].update(max_width=region_bounds[0], max_height=region_bounds[1])
+        FakeImage.get_width = lambda self, w=w: 100 if self is OPEN_IMAGE else w
+        FakeImage.get_height = lambda self, h=h: 100 if self is OPEN_IMAGE else h
+        FakeImage.scale = lambda self, *size, scaled=scaled: scaled.append(size) or True
+        scenario(png_export)
+        try:
+            r = plugin._get_current_image_bitmap(params)
+        finally:
+            FakeImage.get_width, FakeImage.get_height, FakeImage.scale = original
+        check(f"bitmap preview scales a {w}x{h} region with bounds {top_bounds} (top level) and "
+              f"{region_bounds} (region) to {expected[0]}x{expected[1]}",
+              None if r["status"] == "success" and scaled == [expected]
+              else f"got {r.get('error', r['status'])}, scaled to {scaled}")
+
+    # The bitmap preview rejects bad arguments and images with nothing visible
+    # before it creates any temporary image.
+    region = {"origin_x": 0, "origin_y": 0, "width": 10, "height": 10}
+    for params, needle in (
+            ({"image_index": -1}, "image_index must be a non-negative integer"),
+            ({"image_index": 0.5}, "image_index must be a non-negative integer"),
+            ({"image_index": True}, "image_index must be a non-negative integer"),
+            ({"image_index": "0"}, "image_index must be a non-negative integer"),
+            ({"image_index": 3}, "out of range"),
+            ({"max_width": 0, "max_height": 10}, "'max_width' must be at least 1"),
+            ({"max_width": 10, "max_height": -1}, "'max_height' must be at least 1"),
+            ({"max_width": 1.5, "max_height": 10}, "'max_width' must be of type int"),
+            ({"max_width": True, "max_height": 10}, "'max_width' must be of type int"),
+            ({"region": "0,0,10,10"}, "'region' must be an object"),
+            ({"region": dict(region, width=0)}, "'width' must be at least 1"),
+            ({"region": dict(region, height=True)}, "'height' must be of type int"),
+            ({"region": dict(region, origin_x=-1)}, "'origin_x' must be at least 0"),
+            ({"region": dict(region, max_width=0, max_height=5)}, "'max_width' must be at least 1"),
+            ({"region": dict(region, max_width=5, max_height=-2)}, "'max_height' must be at least 1"),
+            ({"region": {"origin_x": 0, "origin_y": 0}}, "all parameters are required"),
+            ({"region": dict(region, origin_x=95)}, "Region bounds invalid")):
+        TEMP_IMAGES.clear()
+        r = plugin._get_current_image_bitmap(params)
+        check(f"bitmap preview rejects {params}",
+              None if r["status"] == "error" and needle in r["error"] and not TEMP_IMAGES
+              else f"got {r}, temporary images {len(TEMP_IMAGES)}")
+
+    class Layer(FakeLayer):
+        def __init__(self, visible=True, opacity=100.0, children=None):
+            self.visible, self.opacity, self.children = visible, opacity, children
+
+        def get_visible(self):
+            return self.visible
+
+        def get_opacity(self):
+            return self.opacity
+
+        def is_group(self):
+            return self.children is not None
+
+        def get_children(self):
+            return self.children
+
+    for name, layers in (("no layers", []),
+                         ("only hidden layers", [Layer(visible=False), Layer(visible=False)]),
+                         ("only a 0%-opacity layer", [Layer(opacity=0.0)]),
+                         ("an opaque layer inside a 0%-opacity group", [Layer(opacity=0.0, children=[Layer()])]),
+                         ("an opaque layer inside a hidden group", [Layer(visible=False, children=[Layer()])]),
+                         ("an empty group", [Layer(children=[])])):
+        OPEN_IMAGE.get_layers = lambda layers=layers: layers
+        TEMP_IMAGES.clear()
+        r = plugin._get_current_image_bitmap({})
+        check(f"bitmap preview reports an error for an image with {name}",
+              None if r["status"] == "error" and "No visible layers" in r["error"] and not TEMP_IMAGES
+              else f"got {r}")
+    del OPEN_IMAGE.get_layers
+
+    for name, layers in (("a visible layer inside a visible group", [Layer(children=[Layer()])]),
+                         ("a visible layer inside nested groups", [Layer(children=[Layer(children=[Layer()])])]),
+                         ("a hidden layer above a visible one", [Layer(visible=False), Layer()])):
+        OPEN_IMAGE.get_layers = lambda layers=layers: layers
+        TEMP_IMAGES.clear()
+        scenario(png_export)
+        r = plugin._get_current_image_bitmap({})
+        check(f"bitmap preview renders an image with {name}",
+              None if r["status"] == "success" and len(TEMP_IMAGES) == 1
+              else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
+    del OPEN_IMAGE.get_layers
+
+    # image_index picks which open image is rendered, full or region.
+    second = FakeImage()
+    get_images = mod.Gimp.get_images
+    mod.Gimp.get_images = staticmethod(lambda: [OPEN_IMAGE, second])
+    try:
+        for params in ({"image_index": 1},
+                       {"image_index": 1, "region": {"origin_x": 0, "origin_y": 0,
+                                                     "width": 10, "height": 10}}):
+            scenario(png_export)
+            r = plugin._get_current_image_bitmap(params)
+            rendered = [c[2] for c in CALLS if c[:2] == ("layer", "new_from_visible")]
+            check(f"bitmap preview renders the second image for {params}",
+                  None if r["status"] == "success" and rendered == [second]
+                  else f"got {r.get('error', r['status'])}, rendered {rendered}")
+    finally:
+        mod.Gimp.get_images = get_images
+
+    # _render_visible renders the source image into the temporary one, with
+    # undo off, and moves the composite so the region's corner lands at (0, 0).
+    CALLS.clear()
+    TEMP_IMAGES.clear()
+    temp = plugin._render_visible(OPEN_IMAGE, 5, 7, 10, 10)
+    temp.delete()
+    check("_render_visible renders the source into its temporary image, offset by the region",
+          None if ("layer", "new_from_visible", OPEN_IMAGE, temp) in CALLS
+          and ("layer", "set_offsets", (-5, -7)) in CALLS
+          and ("image", "undo_disable") in CALLS else f"calls {CALLS}")
+
+    # If the rendered layer can't be added, it isn't freed with the image, so
+    # it is deleted on its own, and the image too.
+    CALLS.clear()
+    TEMP_IMAGES.clear()
+    insert_layer = FakeImage.insert_layer
+    FakeImage.insert_layer = lambda self, *a: False
+    try:
+        reason = raises(lambda: plugin._render_visible(OPEN_IMAGE, 0, 0, 10, 10), "Adding the visible layer")
+    finally:
+        FakeImage.insert_layer = insert_layer
+    check("_render_visible deletes the layer and image when adding the layer fails",
+          reason or (None if ("layer", "delete") in CALLS and len(TEMP_IMAGES) == 1
+                     and all(i.deleted for i in TEMP_IMAGES)
+                     else f"calls {CALLS}, temporary images {TEMP_IMAGES}"))
+
+    # _render_visible renders 8-bit sources at 8 bits and anything deeper at
+    # 16 bits (all PNG holds), always non-linear (sRGB): GIMP's Precision
+    # values are 100 * type + 0 / 50 / 75.
+    for source, expected in ((100, 150), (150, 150), (175, 150), (200, 250), (275, 250),
+                             (350, 250), (500, 250), (600, 250), (675, 250), (700, 250)):
+        PRECISIONS.clear()
+        OPEN_IMAGE.get_precision = lambda source=source: source
+        plugin._render_visible(OPEN_IMAGE, 0, 0, 10, 10).delete()
+        check(f"_render_visible maps precision {source} to {expected}",
+              None if PRECISIONS == [expected] else f"got {PRECISIONS}")
+    del OPEN_IMAGE.get_precision
 
     # _export_to_path must use the GIMP 3 file-*-export procedures, and fail
     # instead of writing PNG data under another format's name (#64, item 5).

@@ -24,6 +24,22 @@ right command when the versions differ.
   the selection (#130).
 
 ### Fixed
+- `get_image_bitmap` and `get_state_snapshot` region snapshots show the visible image. They
+  copied only the top layer, even when it was hidden, so they could show the wrong pixels. Both
+  full and region snapshots now render the visible composite (blend modes, layer groups and
+  layer filters included), so a region matches the same rectangle of a full snapshot. As in
+  GIMP's canvas, a visible channel (including Quick Mask) tints the snapshot. Taking a
+  snapshot no longer replaces your selection or clipboard. Snapshots are now always RGBA PNGs, also
+  for grayscale and indexed images, and images above 8 bits per channel come back as 16-bit
+  PNGs, with colours converted to sRGB (#17).
+- `get_image_bitmap` and `get_state_snapshot` honour `image_index` instead of always capturing
+  the first image, and an index past the last open image is an error. The `get_image_bitmap`
+  MCP tool now accepts `image_index`.
+- `get_image_bitmap` and `get_state_snapshot` return an error when nothing is visible (every
+  layer hidden or at 0% opacity), when a region's width or height is 0, or when a scaling bound
+  is below 1 (`get_image_bitmap`'s `max_width` / `max_height`, or a negative `max_size` for
+  `get_state_snapshot`, where 0 still means no scaling). Before, these returned a blank or wrong
+  image, a misleading error or a division by zero.
 - `create_layer` rejects width or height outside 1–524288 with an error naming the
   dimension and value. Zero no longer silently uses the image size (#135).
 - `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on
