@@ -27,7 +27,6 @@ import platform
 import signal
 
 # Constants for configuration and thresholds
-LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # gegl:vignette shape
@@ -1009,10 +1008,15 @@ class MCPPlugin(Gimp.PlugIn):
 
                 # Apply center inside scaling if target dimensions provided
                 if max_w is not None or max_h is not None:
+                    # Bounds only shrink: a missing bound, or one above the current
+                    # size, is the current size. Otherwise a lone max_width=100 would
+                    # blow a 1x1000 image up to 100x100000
+                    max_w = current_width if max_w is None else min(max_w, current_width)
+                    max_h = current_height if max_h is None else min(max_h, current_height)
+
                     # Calculate center inside scaling in integers: float division can
                     # come out a pixel short (51x43 with max_width=51 gave 51x42)
-                    if max_h is None or (max_w is not None and
-                                         current_width * max_h > max_w * current_height):
+                    if current_width * max_h > max_w * current_height:
                         # Width is the limiting factor
                         target_width = max_w
                         target_height = max(1, max_w * current_height // current_width)
@@ -1025,11 +1029,6 @@ class MCPPlugin(Gimp.PlugIn):
 
                     # Scale the image if dimensions changed
                     if target_width != current_width or target_height != current_height:
-                        # Scale the image with timeout consideration for large operations
-                        scaling_ratio = (target_width * target_height) / (current_width * current_height)
-                        if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
-                            print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
-
                         try:
                             self._check_ok(final_image.scale(target_width, target_height),
                                            "Scaling the preview copy")

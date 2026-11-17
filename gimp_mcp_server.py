@@ -400,7 +400,8 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
     Parameters:
     - image_index: Which open image to fetch (default: 0 = most recent)
     - max_width, max_height: Bounds for scaling (aspect-ratio preserved), at least 1.
-      Either can be given alone. Omit both for full resolution.
+      Either can be given alone. They only shrink: an image already within them is
+      returned at its own size. Omit both for full resolution.
     - region: Dictionary with keys (origin_x, origin_y, width and height are required;
       omit region, not pass {}, for the full image):
         - origin_x, origin_y: Top-left corner of region to extract, at least 0
@@ -544,7 +545,8 @@ def get_state_snapshot(
     Parameters:
     - image_index: Which open image to snapshot (default: 0 = most recent)
     - max_size: Maximum width/height of the returned preview in pixels (default: 512,
-                0 = no scaling)
+                0 = no scaling). Only shrinks: a smaller image or region comes back
+                at its own size
     - region: Optional dict {x, y, width, height} to zoom into a specific area
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)

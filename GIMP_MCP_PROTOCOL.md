@@ -296,7 +296,7 @@ image = get_image_bitmap()
 3. **Region Extract:** `region` with `origin_x`, `origin_y`, `width`, `height` - extracts specific region
 4. **Region Extract + Scale:** `region` also with `max_width` and/or `max_height` - extracts and scales
 
-**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion. A bound given alone limits only its own dimension. A region with either bound of its own ignores the top-level bounds.
+**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion. Bounds only shrink: an image or region already within them is returned at its own size, never enlarged. A bound given alone limits only its own dimension. A region with either bound of its own ignores the top-level bounds.
 
 **Response Format:**
 ```json

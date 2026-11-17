@@ -22,6 +22,11 @@ right command when the versions differ.
 ### Changed
 - `create_layer`'s `fill` covers the whole layer. With a selection active, it used to fill only
   the selection (#130).
+- `get_image_bitmap` and `get_state_snapshot` no longer enlarge images. Their bounds
+  (`max_width` / `max_height`, `max_size`) only shrink, so an image or region smaller than
+  them comes back at its own size: a 240×300 region with `get_state_snapshot`'s default
+  `max_size=512` used to be upscaled to 409×512. A single bound can't blow up a thin image
+  either (a 1×1000 image with only `max_width=100` would have become 100×100000).
 
 ### Fixed
 - `get_image_bitmap` and `get_state_snapshot` region snapshots show the visible image. They

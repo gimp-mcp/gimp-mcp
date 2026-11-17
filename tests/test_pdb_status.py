@@ -650,8 +650,8 @@ def main():
     DIRECT_OK["value"] = True
     FakePDB.last_error = None
 
-    # Scaling fits the region inside the bounds, keeps its aspect ratio, and
-    # never goes below 1 pixel. The region's own bounds win over the top-level
+    # Scaling fits the region inside the bounds, keeps its aspect ratio, never
+    # goes below 1 pixel, and never enlarges: a bound above the size is the size. The region's own bounds win over the top-level
     # ones, which scale a region without bounds (get_state_snapshot relies on
     # that). Either bound may be given alone and limits only its own dimension;
     # a region with one bound of its own ignores the top-level ones. The
@@ -665,7 +665,7 @@ def main():
             (True, (60, 100), None, (50, 50), (30, 50)),
             (True, (1, 100), None, (50, 50), (1, 50)),
             (True, (100, 1), None, (50, 50), (50, 1)),
-            (True, (40, 30), None, (100, 100), (100, 75)),
+            (True, (40, 30), None, (100, 100), None),
             (True, (40, 20), (20, 20), None, (20, 10)),
             (True, (40, 20), (20, 20), (8, 8), (8, 4)),
             (True, (40, 20), None, (10, None), (10, 5)),
@@ -684,7 +684,15 @@ def main():
             (False, (2, 49), (None, 49), None, None),
             (False, (2, 49), (2, 49), None, None),
             (False, (125, 55), (100, None), None, (100, 44)),
-            (False, (175, 75), (70, 70), None, (70, 30))):
+            (False, (175, 75), (70, 70), None, (70, 30)),
+            # Bounds never enlarge, so a lone bound can't blow up a thin image,
+            # and one bound above the size leaves the other in charge
+            (False, (1, 1000), (100, None), None, None),
+            (False, (40, 20), (400, None), None, None),
+            (False, (40, 30), (100, 100), None, None),
+            (False, (40, 20), (400, 10), None, (20, 10)),
+            (True, (40, 20), None, (10, 400), (10, 5)),
+            (True, (40, 20), (512, 512), None, None)):
         scaled = []
         params = {}
         if use_region:
