@@ -27,7 +27,6 @@ import platform
 import signal
 
 # Constants for configuration and thresholds
-LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # gegl:vignette shape
@@ -879,6 +878,9 @@ class MCPPlugin(Gimp.PlugIn):
 
             # Extract region parameters if provided
             region = params.get("region")
+            # Any region given, even {} or one with only scaling bounds, asks for a
+            # region and must name its rectangle; it never means the full image
+            region_requested = region is not None
             if region is None:
                 region = {}
             if not isinstance(region, dict):
@@ -950,13 +952,16 @@ class MCPPlugin(Gimp.PlugIn):
                 }
 
             # Validate region before creating any temporary image
-            region_requested = any(param is not None for param in [origin_x, origin_y, region_width, region_height])
             if region_requested:
                 # Validate region parameters
-                if origin_x is None or origin_y is None or region_width is None or region_height is None:
+                missing = [key for key, value in [("origin_x", origin_x), ("origin_y", origin_y),
+                                                  ("width", region_width), ("height", region_height)]
+                           if value is None]
+                if missing:
                     return {
                         "status": "error",
                         "error": "For region selection, all parameters are required: origin_x, origin_y, width, height"
+                                 f" (missing: {', '.join(missing)})"
                     }
 
                 # Validate region bounds
@@ -993,40 +998,37 @@ class MCPPlugin(Gimp.PlugIn):
                 target_width = current_width
                 target_height = current_height
                 
-                # Determine scaling target
-                if scaled_to_width is not None and scaled_to_height is not None:
-                    # Region scaling - use scaled_to dimensions
+                # Determine scaling target: a region's own bounds, or else the
+                # top-level ones. Either bound may be given alone and limits
+                # only its own dimension
+                if scaled_to_width is not None or scaled_to_height is not None:
                     max_w, max_h = scaled_to_width, scaled_to_height
-                elif max_width is not None and max_height is not None:
-                    # Full image scaling - use max dimensions
-                    max_w, max_h = max_width, max_height
                 else:
-                    max_w = max_h = None
-                
+                    max_w, max_h = max_width, max_height
+
                 # Apply center inside scaling if target dimensions provided
-                if max_w is not None and max_h is not None:
-                    # Calculate center inside scaling
-                    aspect_ratio = current_width / current_height
-                    max_aspect_ratio = max_w / max_h
-                    
-                    if aspect_ratio > max_aspect_ratio:
+                if max_w is not None or max_h is not None:
+                    # Bounds only shrink: a missing bound, or one above the current
+                    # size, is the current size. Otherwise a lone max_width=100 would
+                    # blow a 1x1000 image up to 100x100000
+                    max_w = current_width if max_w is None else min(max_w, current_width)
+                    max_h = current_height if max_h is None else min(max_h, current_height)
+
+                    # Calculate center inside scaling in integers: float division can
+                    # come out a pixel short (51x43 with max_width=51 gave 51x42)
+                    if current_width * max_h > max_w * current_height:
                         # Width is the limiting factor
                         target_width = max_w
-                        target_height = max(1, int(max_w / aspect_ratio))
+                        target_height = max(1, max_w * current_height // current_width)
                     else:
                         # Height is the limiting factor
                         target_height = max_h
-                        target_width = max(1, int(max_h * aspect_ratio))
+                        target_width = max(1, max_h * current_width // current_height)
                     
                     print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
 
                     # Scale the image if dimensions changed
                     if target_width != current_width or target_height != current_height:
-                        # Scale the image with timeout consideration for large operations
-                        scaling_ratio = (target_width * target_height) / (current_width * current_height)
-                        if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
-                            print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
-
                         try:
                             self._check_ok(final_image.scale(target_width, target_height),
                                            "Scaling the preview copy")

@@ -22,6 +22,11 @@ right command when the versions differ.
 ### Changed
 - `create_layer`'s `fill` covers the whole layer. With a selection active, it used to fill only
   the selection (#130).
+- `get_image_bitmap` and `get_state_snapshot` no longer enlarge images. Their bounds
+  (`max_width` / `max_height`, `max_size`) only shrink, so an image or region smaller than
+  them comes back at its own size: a 240×300 region with `get_state_snapshot`'s default
+  `max_size=512` used to be upscaled to 409×512. A single bound can't blow up a thin image
+  either (a 1×1000 image with only `max_width=100` would have become 100×100000).
 
 ### Fixed
 - `get_image_bitmap` and `get_state_snapshot` region snapshots show the visible image. They
@@ -40,6 +45,15 @@ right command when the versions differ.
   is below 1 (`get_image_bitmap`'s `max_width` / `max_height`, or a negative `max_size` for
   `get_state_snapshot`, where 0 still means no scaling). Before, these returned a blank or wrong
   image, a misleading error or a division by zero.
+- `get_image_bitmap` scales by `max_width` or `max_height` alone. Before, scaling needed both,
+  and a single bound returned the image at full size. A region with one bound of its own was
+  left unscaled, or scaled by the top-level bounds when both of those were given.
+- `get_image_bitmap` returns an error for a `region` that doesn't give `origin_x`, `origin_y`,
+  `width` and `height`. A region with none of them, such as `{}` or one with only `max_width` /
+  `max_height`, used to return the full image instead. The error names the missing keys.
+- `get_image_bitmap` and `get_state_snapshot` compute scaled sizes exactly. They could come out
+  a pixel short (175×75 fitted into 70×70 gave 70×29, not 70×30), and an image already at the
+  size of its bounds could be resampled 1 pixel smaller, distorting its aspect ratio.
 - `create_layer` rejects width or height outside 1–524288 with an error naming the
   dimension and value. Zero no longer silently uses the image size (#135).
 - `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on
