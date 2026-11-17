@@ -1009,17 +1009,17 @@ class MCPPlugin(Gimp.PlugIn):
 
                 # Apply center inside scaling if target dimensions provided
                 if max_w is not None or max_h is not None:
-                    # Calculate center inside scaling
-                    aspect_ratio = current_width / current_height
-
-                    if max_h is None or (max_w is not None and aspect_ratio > max_w / max_h):
+                    # Calculate center inside scaling in integers: float division can
+                    # come out a pixel short (51x43 with max_width=51 gave 51x42)
+                    if max_h is None or (max_w is not None and
+                                         current_width * max_h > max_w * current_height):
                         # Width is the limiting factor
                         target_width = max_w
-                        target_height = max(1, int(max_w / aspect_ratio))
+                        target_height = max(1, max_w * current_height // current_width)
                     else:
                         # Height is the limiting factor
                         target_height = max_h
-                        target_width = max(1, int(max_h * aspect_ratio))
+                        target_width = max(1, max_h * current_width // current_height)
                     
                     print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
 

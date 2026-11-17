@@ -676,7 +676,15 @@ def main():
             (False, (1000, 500), (100, None), None, (100, 50)),
             (False, (1000, 500), (None, 100), None, (200, 100)),
             (False, (1000, 500), (100, 100), None, (100, 50)),
-            (False, (500, 1000), (100, None), None, (100, 200))):
+            (False, (500, 1000), (100, None), None, (100, 200)),
+            # A bound equal to the image's size leaves it unscaled, and scaled
+            # sizes are exact (float maths could come out a pixel short)
+            (False, (51, 43), (51, None), None, None),
+            (False, (1024, 93), (1024, None), None, None),
+            (False, (2, 49), (None, 49), None, None),
+            (False, (2, 49), (2, 49), None, None),
+            (False, (125, 55), (100, None), None, (100, 44)),
+            (False, (175, 75), (70, 70), None, (70, 30))):
         scaled = []
         params = {}
         if use_region:

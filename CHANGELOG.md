@@ -46,6 +46,9 @@ right command when the versions differ.
 - `get_image_bitmap` returns an error for a `region` that doesn't give `origin_x`, `origin_y`,
   `width` and `height`. A region with none of them, such as `{}` or one with only `max_width` /
   `max_height`, used to return the full image instead. The error names the missing keys.
+- `get_image_bitmap` and `get_state_snapshot` compute scaled sizes exactly. They could come out
+  a pixel short (175×75 fitted into 70×70 gave 70×29, not 70×30), and an image already at the
+  size of its bounds could be resampled 1 pixel smaller, distorting its aspect ratio.
 - `create_layer` rejects width or height outside 1–524288 with an error naming the
   dimension and value. Zero no longer silently uses the image size (#135).
 - `apply_drop_shadow` no longer fails with `PDB procedure 'plug-in-gauss' not found` on
