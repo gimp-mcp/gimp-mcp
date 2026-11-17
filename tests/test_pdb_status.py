@@ -1,0 +1,949 @@
+#!/usr/bin/env python3
+"""Regression test for issue #90: failed PDB calls must not report success.
+
+Gimp.Procedure.run() does not raise when GIMP rejects a call; it returns a
+value array whose first value is a Gimp.PDBStatusType. The plug-in's
+_run_pdb() must turn a non-SUCCESS status into an exception, and
+_lookup_pdb() must raise for a missing procedure, so handlers return
+{"status": "error"} instead of a false success. Call sites that have a real
+alternative for a missing procedure (_blur's GEGL filter, _save_xcf's
+Gimp.file_overwrite) must still use it. Direct libgimp calls (edit_fill,
+image.crop, ...) return False instead of raising, and handlers must report
+that as an error too (#115).
+
+Stubs gi.repository so the plugin imports without a running GIMP.
+Exits 0 on pass, 1 on fail.
+"""
+import importlib.util
+import os
+import sys
+import tempfile
+import types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN = os.path.join(HERE, os.pardir, "gimp-mcp-plugin.py")
+
+
+class Status:
+    """Stand-in for a Gimp.PDBStatusType value (a GEnum with value_nick)."""
+
+    def __init__(self, nick):
+        self.value_nick = nick
+
+
+SUCCESS = Status("success")
+EXECUTION_ERROR = Status("execution-error")
+
+# Procedures the fake PDB knows, and what running each returns:
+# name -> (status, error message or None). Set per scenario.
+PDB_PROCS = {}
+CALLS = []  # (what, detail) records of side effects, cleared per scenario
+CONFIG = {}  # properties set on the most recently created procedure config
+# What direct libgimp calls (edit_fill, image.crop, file_overwrite, ...) return.
+# libgimp returns False instead of raising when GIMP rejects the call (#115).
+DIRECT_OK = {"value": True}
+# What image.flatten() / merge_visible_layers() return: a layer, or None when
+# GIMP rejects the call.
+ITEM_RESULT = {"value": "merged-layer"}
+
+
+class FakeLayer:
+    def get_name(self):
+        return "merged"
+
+    def get_id(self):
+        return 7
+
+    # A visible, opaque layer, as the bitmap preview needs one to render
+    def get_visible(self):
+        return True
+
+    def get_opacity(self):
+        return 100.0
+
+    def is_group(self):
+        return False
+
+    def set_offsets(self, *a):
+        CALLS.append(("layer", "set_offsets", a))
+        return True
+
+    def delete(self):
+        CALLS.append(("layer", "delete"))
+
+    def resize_to_image_size(self):
+        return True
+
+
+class FakeValueArray:
+    """Stand-in for Gimp.ValueArray as returned by Gimp.Procedure.run()."""
+
+    def __init__(self, *values):
+        self._values = values
+
+    def index(self, i):
+        return self._values[i]
+
+    def length(self):
+        return len(self._values)
+
+
+class FakeProc:
+    """Stand-in for Gimp.Procedure that returns a preset status."""
+
+    def __init__(self, name, status, message=None):
+        self._name, self._status, self._message = name, status, message
+
+    def get_name(self):
+        return self._name
+
+    def create_config(self):
+        CONFIG.clear()
+        return types.SimpleNamespace(set_property=CONFIG.__setitem__)
+
+    def run(self, cfg):
+        CALLS.append(("run", self._name))
+        if self._message is None:
+            return FakeValueArray(self._status)
+        return FakeValueArray(self._status, self._message)
+
+
+class FakePDB:
+    last_error = None
+
+    def get_last_error(self):
+        return FakePDB.last_error
+
+    def lookup_procedure(self, name):
+        if name not in PDB_PROCS:
+            return None
+        status, message = PDB_PROCS[name]
+        return FakeProc(name, status, message)
+
+
+class FakeDrawable:
+    """Drawable whose curves_spline() returns a preset result, as libgimp does."""
+
+    def __init__(self, curves_result):
+        self.curves_result = curves_result
+
+    def curves_spline(self, channel, points):
+        CALLS.append(("curves_spline", self.curves_result))
+        return self.curves_result
+
+
+PRECISIONS = []  # precisions passed to Gimp.Image.new_with_precision
+TEMP_IMAGES = []  # images the plug-in creates (new or duplicate), to check cleanup
+
+
+class FakeImage:
+    deleted = False
+
+    def _direct(self, what):
+        CALLS.append(("image", what))
+        return DIRECT_OK["value"]
+
+    def crop(self, *a):
+        return self._direct("crop")
+
+    def scale(self, *a):
+        return self._direct("scale")
+
+    def flip(self, *a):
+        return self._direct("flip")
+
+    def flatten(self):
+        CALLS.append(("image", "flatten"))
+        return ITEM_RESULT["value"]
+
+    def merge_visible_layers(self, merge_type):
+        CALLS.append(("image", "merge"))
+        return FakeLayer() if ITEM_RESULT["value"] is not None else None
+
+    def duplicate(self):
+        CALLS.append(("image", "duplicate"))
+        dup = FakeImage()
+        TEMP_IMAGES.append(dup)
+        return dup
+
+    def delete(self):
+        CALLS.append(("image", "delete"))
+        self.deleted = True
+
+    def get_base_type(self):
+        return 0
+
+    def get_precision(self):
+        return 150  # U8_NON_LINEAR
+
+    def insert_layer(self, *a):
+        pass
+
+    def get_width(self):
+        return 100
+
+    def get_height(self):
+        return 100
+
+    def get_id(self):
+        return 1
+
+    def select_rectangle(self, *a):
+        CALLS.append(("select", "rectangle"))
+
+    def select_ellipse(self, *a):
+        CALLS.append(("select", "ellipse"))
+
+    def undo_disable(self):
+        CALLS.append(("image", "undo_disable"))
+        return True
+
+    def undo_group_start(self):
+        pass
+
+    def undo_group_end(self):
+        pass
+
+    def get_selected_layers(self):
+        return ["layer"]
+
+    def get_layers(self):
+        return [FakeLayer()]
+
+    def get_item_position(self, item):
+        return 0
+
+
+class LayerlessImage(FakeImage):
+    """An image without layers. As in GIMP 3.2, flatten() on it returns None."""
+
+    def get_layers(self):
+        return []
+
+    def flatten(self):
+        CALLS.append(("image", "flatten"))
+        return None
+
+
+OPEN_IMAGE = FakeImage()  # the image the user has open
+
+
+def install_gi_stub():
+    """Install a fake gi.repository with just enough of Gimp to run the handlers."""
+    gi = types.ModuleType("gi")
+    gi.require_version = lambda *a, **k: None
+    repository = types.ModuleType("gi.repository")
+
+    class Gimp:
+        class PlugIn:
+            __gtype__ = "stub-gtype"
+
+        class RunMode:
+            INTERACTIVE, NONINTERACTIVE = 0, 1
+
+        class PDBStatusType:
+            pass
+
+        class DesaturateMode:
+            LUMINANCE, LUMA, AVERAGE, LIGHTNESS = range(4)
+
+        class HistogramChannel:
+            VALUE, RED, GREEN, BLUE, ALPHA = range(5)
+
+        class StrokeMethod:
+            LINE = 0
+
+        class ChannelOps:
+            REPLACE = 2
+
+        class InterpolationType:
+            NONE, LINEAR, CUBIC = range(3)
+
+        class OrientationType:
+            HORIZONTAL, VERTICAL = range(2)
+
+        class MergeType:
+            CLIP_TO_IMAGE = 1
+
+        class FillType:
+            FOREGROUND, BACKGROUND, TRANSPARENT, PATTERN = range(4)
+
+        class Selection:
+            @staticmethod
+            def none(image):
+                CALLS.append(("select", "none"))
+
+            @staticmethod
+            def all(image):
+                CALLS.append(("select", "all"))
+
+            @staticmethod
+            def bounds(image):
+                # Non-empty selection so _fill_selection proceeds to edit_fill.
+                return (True, True, 0, 0, 1, 1)
+
+        class Drawable:
+            @staticmethod
+            def edit_fill(drawable, fill_type):
+                CALLS.append(("edit_fill", fill_type))
+                return DIRECT_OK["value"]
+
+        @staticmethod
+        def pencil(drawable, coords):
+            CALLS.append(("pencil", coords))
+            return DIRECT_OK["value"]
+
+        @staticmethod
+        def context_set_foreground(color):
+            pass
+
+        @staticmethod
+        def context_set_brush_size(size):
+            pass
+
+        @staticmethod
+        def context_set_stroke_method(method):
+            pass
+
+        @staticmethod
+        def context_set_line_width(width):
+            pass
+
+        @staticmethod
+        def context_pop():
+            pass
+
+        @staticmethod
+        def main(gtype, argv):
+            pass
+
+        @staticmethod
+        def get_pdb():
+            return FakePDB()
+
+        @staticmethod
+        def get_images():
+            return [OPEN_IMAGE]
+
+        class Image:
+            @staticmethod
+            def new(width, height, base_type):
+                img = FakeImage()
+                TEMP_IMAGES.append(img)
+                return img
+
+            @staticmethod
+            def new_with_precision(width, height, base_type, precision):
+                PRECISIONS.append(precision)
+                return Gimp.Image.new(width, height, base_type)
+
+        @staticmethod
+        def Precision(value):
+            return value
+
+        class Layer:
+            @staticmethod
+            def new(*a):
+                return "region-layer"
+
+            @staticmethod
+            def new_from_visible(image, dest_image, name):
+                CALLS.append(("layer", "new_from_visible", image, dest_image))
+                return FakeLayer()
+
+        class LayerMode:
+            NORMAL = 28
+
+        class ImageBaseType:
+            RGB = 0
+
+        @staticmethod
+        def displays_flush():
+            pass
+
+        @staticmethod
+        def file_overwrite(run_mode, image, gio_file):
+            CALLS.append(("file_overwrite", gio_file))
+            return DIRECT_OK["value"]
+
+    Gimp.PDBStatusType.SUCCESS = SUCCESS
+    Gimp.PDBStatusType.EXECUTION_ERROR = EXECUTION_ERROR
+
+    class GLib:
+        class Error(Exception):
+            pass
+
+        @staticmethod
+        def dgettext(domain, msg):
+            return msg
+
+    class GObject:
+        class ParamFlags:
+            READWRITE = 0
+
+    class Gio:
+        class File:
+            @staticmethod
+            def new_for_path(path):
+                return path
+
+    repository.Gimp, repository.GLib, repository.GObject = Gimp, GLib, GObject
+    repository.Gio = Gio
+    repository.Gegl = types.SimpleNamespace(Color=types.SimpleNamespace(new=lambda s: s))
+    gi.repository = repository
+    sys.modules["gi"] = gi
+    sys.modules["gi.repository"] = repository
+
+
+def load_plugin():
+    """Import gimp-mcp-plugin.py as a module (its file name has a hyphen)."""
+    spec = importlib.util.spec_from_file_location("gimp_mcp_plugin", PLUGIN)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def raises(fn, *needles):
+    """Return None if fn() raises RuntimeError mentioning every needle, else a reason."""
+    try:
+        fn()
+    except RuntimeError as e:
+        missing = [n for n in needles if n not in str(e)]
+        return f"error {str(e)!r} lacks {missing}" if missing else None
+    except Exception as e:
+        return f"raised {type(e).__name__}: {e}"
+    return "did not raise"
+
+
+def scenario(procs):
+    """Reset the fake PDB to `procs` and clear recorded calls."""
+    PDB_PROCS.clear()
+    PDB_PROCS.update(procs)
+    CALLS.clear()
+
+
+def main():
+    install_gi_stub()
+    mod = load_plugin()
+    plugin = mod.MCPPlugin()
+    failures = []
+
+    def check(name, problem):
+        print(f"{'FAIL' if problem else 'PASS'}: {name}" + (f" ({problem})" if problem else ""))
+        if problem:
+            failures.append(name)
+
+    # _run_pdb
+    ok = FakeProc("p-ok", SUCCESS)
+    result = plugin._run_pdb(ok, ok.create_config())
+    check("_run_pdb returns the result on SUCCESS",
+          None if result.index(0) is SUCCESS else f"got {result.index(0)}")
+
+    bad = FakeProc("p-bad", EXECUTION_ERROR, "Item 'Background' is locked")
+    check("_run_pdb raises with the procedure name, status and GIMP's message",
+          raises(lambda: plugin._run_pdb(bad, bad.create_config()),
+                 "p-bad", "execution-error", "is locked"))
+
+    bare = FakeProc("p-bare", EXECUTION_ERROR)
+    check("_run_pdb raises when GIMP gives no message",
+          raises(lambda: plugin._run_pdb(bare, bare.create_config()), "p-bare", "execution-error"))
+
+    # _lookup_pdb
+    scenario({})
+    check("_lookup_pdb raises for a missing procedure",
+          raises(lambda: plugin._lookup_pdb("gimp-nope"), "gimp-nope", "not found"))
+
+    # A handler with no alternative: errors must reach the client.
+    scenario({"gimp-drawable-desaturate": (SUCCESS, None)})
+    r = plugin._desaturate({})
+    check("desaturate reports success when GIMP succeeds",
+          None if r["status"] == "success" else r.get("error"))
+
+    scenario({"gimp-drawable-desaturate": (EXECUTION_ERROR, "Item 'Background' is locked")})
+    r = plugin._desaturate({})
+    check("desaturate reports an error when GIMP rejects the call",
+          None if r["status"] == "error" and "is locked" in r["error"] else f"got {r}")
+
+    scenario({})
+    r = plugin._desaturate({})
+    check("desaturate reports an error when the procedure is missing",
+          None if r["status"] == "error" and "not found" in r["error"] else f"got {r}")
+
+    # auto_levels has no fallback: an identity gimp-drawable-levels call would
+    # report success without changing the image (#113).
+    scenario({"gimp-drawable-levels": (SUCCESS, None)})
+    r = plugin._auto_levels({})
+    check("auto_levels reports an error when levels-stretch is missing",
+          None if r["status"] == "error" and "gimp-drawable-levels-stretch" in r["error"]
+          and not CALLS else f"got {r}, calls {CALLS}")
+
+    scenario({"gimp-drawable-levels-stretch": (SUCCESS, None)})
+    r = plugin._auto_levels({})
+    check("auto_levels runs levels-stretch when GIMP has it",
+          None if r["status"] == "success" and ("run", "gimp-drawable-levels-stretch") in CALLS
+          else f"got {r}, calls {CALLS}")
+
+    # Handlers with an alternative for a missing procedure must still use it.
+    # Direct libgimp methods return False instead of raising (curves_spline).
+    real_resolve = plugin._resolve_layer
+    plugin._resolve_layer = lambda image, name, index: FakeDrawable(False)
+    scenario({})
+    FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
+    r = plugin._adjust_curves({})
+    check("adjust_curves reports an error when curves_spline returns False",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+    FakePDB.last_error = None
+
+    plugin._resolve_layer = lambda image, name, index: FakeDrawable(True)
+    scenario({})
+    r = plugin._adjust_curves({})
+    check("adjust_curves reports success when curves_spline returns True",
+          None if r["status"] == "success" else f"got {r}")
+    plugin._resolve_layer = real_resolve
+
+    # A failed stroke must still clear the temporary selection.
+    plugin._push_paint_context = lambda: None
+    for handler, shape in (("_draw_rectangle", "rectangle"), ("_draw_ellipse", "ellipse")):
+        scenario({"gimp-drawable-edit-stroke-selection": (EXECUTION_ERROR, "locked")})
+        r = getattr(plugin, handler)({"width": 10, "height": 10})
+        check(f"{handler[1:]} clears its selection when the stroke fails",
+              None if r["status"] == "error" and CALLS[-1] == ("select", "none")
+              and ("select", shape) in CALLS else f"got {r}, calls {CALLS}")
+
+    scenario({})
+    plugin._apply_gegl_filter = lambda image, drawable, op, props: CALLS.append(("gegl", op, props))
+    r = plugin._blur({})
+    check("blur falls back to the GEGL filter when plug-in-gauss is missing",
+          None if r["status"] == "success"
+          and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur" for c in CALLS)
+          else f"got {r}, calls {CALLS}")
+
+    scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
+    r = plugin._blur({})
+    check("blur reports an error when plug-in-gauss fails",
+          None if r["status"] == "error" else f"got {r}")
+
+    # apply_drop_shadow blurs its shadow layer the same way: it must take
+    # the GEGL fallback when plug-in-gauss is missing, and report an error
+    # when the plug-in runs and fails.
+    real_resolve = plugin._resolve_layer
+    shadow = types.SimpleNamespace(set_lock_alpha=lambda v: None,
+                                   set_opacity=lambda v: None,
+                                   get_offsets=lambda: types.SimpleNamespace(offset_x=0, offset_y=0),
+                                   set_offsets=lambda *a: None,
+                                   set_name=lambda n: None)
+    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(copy=lambda: shadow)
+    scenario({})
+    r = plugin._apply_drop_shadow({"blur_radius": 7.5})
+    check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
+          None if r["status"] == "success"
+          and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur"
+                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5} for c in CALLS)
+          else f"got {r}, calls {CALLS}")
+
+    scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
+    r = plugin._apply_drop_shadow({})
+    check("apply_drop_shadow reports an error when plug-in-gauss fails",
+          None if r["status"] == "error" else f"got {r}")
+    plugin._resolve_layer = real_resolve
+
+    scenario({})
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf falls back to Gimp.file_overwrite when gimp-xcf-save is missing",
+          None if r["status"] == "success" and ("file_overwrite", "/tmp/x.xcf") in CALLS
+          else f"got {r}, calls {CALLS}")
+
+    scenario({"gimp-xcf-save": (EXECUTION_ERROR, "Permission denied")})
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf reports an error when gimp-xcf-save fails",
+          None if r["status"] == "error" and "Permission denied" in r["error"] else f"got {r}")
+
+    scenario({})
+    DIRECT_OK["value"] = False
+    FakePDB.last_error = "Error saving 'x.xcf': Permission denied"
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf reports an error when Gimp.file_overwrite returns False",
+          None if r["status"] == "error" and "Permission denied" in r["error"] else f"got {r}")
+
+    # Direct libgimp calls that return False must not report success (#115).
+    FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
+    for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
+                            ("_fill_ellipse", {"width": 10, "height": 10}),
+                            ("_fill_layer", {})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports an error and clears its selection when the fill fails",
+              None if r["status"] == "error" and "contents are locked" in r["error"]
+              and CALLS[-1] == ("select", "none") else f"got {r}, calls {CALLS}")
+
+    for handler, params in (("_fill_selection", {}),
+                            ("_draw_line", {"x2": 10, "y2": 10}),
+                            ("_crop_to_rect", {"width": 10, "height": 10}),
+                            ("_scale_image", {"width": 10, "height": 10}),
+                            ("_flip_image", {})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports an error when its libgimp call returns False",
+              None if r["status"] == "error" and "contents are locked" in r["error"]
+              else f"got {r}, calls {CALLS}")
+    FakePDB.last_error = None
+
+    DIRECT_OK["value"] = True
+    for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
+                            ("_crop_to_rect", {"width": 10, "height": 10})):
+        scenario({})
+        r = getattr(plugin, handler)(params)
+        check(f"{handler[1:]} reports success when its libgimp call returns True",
+              None if r["status"] == "success" else f"got {r}")
+
+    # Calls that return an item give None when GIMP rejects them (#115).
+    FakePDB.last_error = "Item 'Layer' (3) cannot be modified because its contents are locked"
+    ITEM_RESULT["value"] = None
+    scenario({})
+    r = plugin._flatten_image({})
+    check("flatten_image reports an error when flatten() returns None",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+
+    scenario({})
+    r = plugin._merge_visible_layers({})
+    check("merge_visible_layers reports an error when merge returns None",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+
+    scenario({})
+    problem = raises(lambda: plugin._export_to_path(FakeImage(), os.path.join(tempfile.mkdtemp(), "x.png"),
+                                                   "png", 95, True),
+                     "Flattening", "contents are locked")
+    check("_export_to_path raises and deletes its copy when flattening it fails",
+          problem or (None if CALLS[-1] == ("image", "delete") else f"calls {CALLS}"))
+    ITEM_RESULT["value"] = "merged-layer"
+
+    scenario({})
+    r = plugin._merge_visible_layers({})
+    check("merge_visible_layers reports success when merge returns a layer",
+          None if r["status"] == "success" and r["results"]["layer_id"] == 7 else f"got {r}")
+
+    # Temporary copies must still be deleted when a call on them fails.
+    DIRECT_OK["value"] = False
+    scenario({})
+    r = plugin._export_social_media_kit({"output_dir": tempfile.mkdtemp(),
+                                         "platforms": ["instagram_square"]})
+    check("export_social_media_kit reports an error and deletes its copy when scaling fails",
+          None if r["status"] == "error" and "Scaling the export copy" in r["error"]
+          and CALLS[-1] == ("image", "delete") else f"got {r}, calls {CALLS}")
+
+    scenario({})
+    r = plugin._batch_resize({"scale_factor": 0.5})
+    check("batch_resize reports an error when scaling an open image fails",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+    # The bitmap preview renders a region into one temporary image and scales
+    # it in place; a failed scale must delete it, and never the open image.
+    scenario({})
+    TEMP_IMAGES.clear()
+    r = plugin._get_current_image_bitmap({"region": {"origin_x": 0, "origin_y": 0, "width": 50,
+                                                     "height": 50, "max_width": 10, "max_height": 10}})
+    check("bitmap preview deletes its temporary image, not the open one, when scaling fails",
+          None if r["status"] == "error" and "Scaling the preview copy" in r["error"]
+          and len(TEMP_IMAGES) == 1 and all(i.deleted for i in TEMP_IMAGES)
+          and not OPEN_IMAGE.deleted
+          else f"got {r.get('error', r)}, temp deleted {[i.deleted for i in TEMP_IMAGES]}, "
+               f"open deleted {OPEN_IMAGE.deleted}")
+    DIRECT_OK["value"] = True
+    FakePDB.last_error = None
+
+    # Scaling fits the region inside the bounds, keeps its aspect ratio, never
+    # goes below 1 pixel, and never enlarges: a bound above the size is the size. The region's own bounds win over the top-level
+    # ones, which scale a region without bounds (get_state_snapshot relies on
+    # that). Either bound may be given alone and limits only its own dimension;
+    # a region with one bound of its own ignores the top-level ones. The
+    # temporary image has the region's (or the full image's) size; expected
+    # None means no scaling.
+    # A working PNG export, so the success-path cases below can require success.
+    png_export = {"file-png-export": (SUCCESS, None)}
+    original = FakeImage.get_width, FakeImage.get_height, FakeImage.scale
+    for use_region, (w, h), top_bounds, region_bounds, expected in (
+            (True, (100, 60), None, (50, 50), (50, 30)),
+            (True, (60, 100), None, (50, 50), (30, 50)),
+            (True, (1, 100), None, (50, 50), (1, 50)),
+            (True, (100, 1), None, (50, 50), (50, 1)),
+            (True, (40, 30), None, (100, 100), None),
+            (True, (40, 20), (20, 20), None, (20, 10)),
+            (True, (40, 20), (20, 20), (8, 8), (8, 4)),
+            (True, (40, 20), None, (10, None), (10, 5)),
+            (True, (40, 20), None, (None, 5), (10, 5)),
+            (True, (40, 20), (8, 8), (None, 5), (10, 5)),
+            (True, (40, 20), (10, None), None, (10, 5)),
+            (False, (1000, 500), None, None, None),
+            (False, (1000, 500), (100, None), None, (100, 50)),
+            (False, (1000, 500), (None, 100), None, (200, 100)),
+            (False, (1000, 500), (100, 100), None, (100, 50)),
+            (False, (500, 1000), (100, None), None, (100, 200)),
+            # A bound equal to the image's size leaves it unscaled, and scaled
+            # sizes are exact (float maths could come out a pixel short)
+            (False, (51, 43), (51, None), None, None),
+            (False, (1024, 93), (1024, None), None, None),
+            (False, (2, 49), (None, 49), None, None),
+            (False, (2, 49), (2, 49), None, None),
+            (False, (125, 55), (100, None), None, (100, 44)),
+            (False, (175, 75), (70, 70), None, (70, 30)),
+            # Bounds never enlarge, so a lone bound can't blow up a thin image,
+            # and one bound above the size leaves the other in charge
+            (False, (1, 1000), (100, None), None, None),
+            (False, (40, 20), (400, None), None, None),
+            (False, (40, 30), (100, 100), None, None),
+            (False, (40, 20), (400, 10), None, (20, 10)),
+            (True, (40, 20), None, (10, 400), (10, 5)),
+            (True, (40, 20), (512, 512), None, None)):
+        scaled = []
+        params = {}
+        if use_region:
+            params["region"] = {"origin_x": 0, "origin_y": 0, "width": w, "height": h}
+        for target, bounds in ((params, top_bounds), (params.get("region"), region_bounds)):
+            for key, value in zip(("max_width", "max_height"), bounds or ()):
+                if value is not None:
+                    target[key] = value
+        open_w, open_h = (100, 100) if use_region else (w, h)
+        FakeImage.get_width = lambda self, w=w, o=open_w: o if self is OPEN_IMAGE else w
+        FakeImage.get_height = lambda self, h=h, o=open_h: o if self is OPEN_IMAGE else h
+        FakeImage.scale = lambda self, *size, scaled=scaled: scaled.append(size) or True
+        scenario(png_export)
+        try:
+            r = plugin._get_current_image_bitmap(params)
+        finally:
+            FakeImage.get_width, FakeImage.get_height, FakeImage.scale = original
+        what = "region" if use_region else "full image"
+        result = f"{expected[0]}x{expected[1]}" if expected else "unscaled"
+        check(f"bitmap preview of a {w}x{h} {what} with bounds {top_bounds} (top level) and "
+              f"{region_bounds} (region) is {result}",
+              None if r["status"] == "success" and scaled == ([expected] if expected else [])
+              else f"got {r.get('error', r['status'])}, scaled to {scaled}")
+
+    # The bitmap preview rejects bad arguments and images with nothing visible
+    # before it creates any temporary image.
+    region = {"origin_x": 0, "origin_y": 0, "width": 10, "height": 10}
+    for params, needle in (
+            ({"image_index": -1}, "image_index must be a non-negative integer"),
+            ({"image_index": 0.5}, "image_index must be a non-negative integer"),
+            ({"image_index": True}, "image_index must be a non-negative integer"),
+            ({"image_index": "0"}, "image_index must be a non-negative integer"),
+            ({"image_index": 3}, "out of range"),
+            ({"max_width": 0, "max_height": 10}, "'max_width' must be at least 1"),
+            ({"max_width": 10, "max_height": -1}, "'max_height' must be at least 1"),
+            ({"max_width": 1.5, "max_height": 10}, "'max_width' must be of type int"),
+            ({"max_width": True, "max_height": 10}, "'max_width' must be of type int"),
+            ({"region": "0,0,10,10"}, "'region' must be an object"),
+            ({"region": dict(region, width=0)}, "'width' must be at least 1"),
+            ({"region": dict(region, height=True)}, "'height' must be of type int"),
+            ({"region": dict(region, origin_x=-1)}, "'origin_x' must be at least 0"),
+            ({"region": dict(region, max_width=0, max_height=5)}, "'max_width' must be at least 1"),
+            ({"region": dict(region, max_width=5, max_height=-2)}, "'max_height' must be at least 1"),
+            ({"region": {"origin_x": 0, "origin_y": 0}}, "(missing: width, height)"),
+            # A region without its rectangle is an error, never the full image
+            ({"region": {}}, "(missing: origin_x, origin_y, width, height)"),
+            ({"region": {"max_width": 10, "max_height": 10}},
+             "(missing: origin_x, origin_y, width, height)"),
+            ({"max_width": 10, "region": {"max_height": 10}},
+             "(missing: origin_x, origin_y, width, height)"),
+            ({"region": dict(region, height=None)}, "(missing: height)"),
+            ({"region": dict(region, origin_x=95)}, "Region bounds invalid")):
+        TEMP_IMAGES.clear()
+        r = plugin._get_current_image_bitmap(params)
+        check(f"bitmap preview rejects {params}",
+              None if r["status"] == "error" and needle in r["error"] and not TEMP_IMAGES
+              else f"got {r}, temporary images {len(TEMP_IMAGES)}")
+
+    class Layer(FakeLayer):
+        def __init__(self, visible=True, opacity=100.0, children=None):
+            self.visible, self.opacity, self.children = visible, opacity, children
+
+        def get_visible(self):
+            return self.visible
+
+        def get_opacity(self):
+            return self.opacity
+
+        def is_group(self):
+            return self.children is not None
+
+        def get_children(self):
+            return self.children
+
+    for name, layers in (("no layers", []),
+                         ("only hidden layers", [Layer(visible=False), Layer(visible=False)]),
+                         ("only a 0%-opacity layer", [Layer(opacity=0.0)]),
+                         ("an opaque layer inside a 0%-opacity group", [Layer(opacity=0.0, children=[Layer()])]),
+                         ("an opaque layer inside a hidden group", [Layer(visible=False, children=[Layer()])]),
+                         ("an empty group", [Layer(children=[])])):
+        OPEN_IMAGE.get_layers = lambda layers=layers: layers
+        TEMP_IMAGES.clear()
+        r = plugin._get_current_image_bitmap({})
+        check(f"bitmap preview reports an error for an image with {name}",
+              None if r["status"] == "error" and "No visible layers" in r["error"] and not TEMP_IMAGES
+              else f"got {r}")
+    del OPEN_IMAGE.get_layers
+
+    for name, layers in (("a visible layer inside a visible group", [Layer(children=[Layer()])]),
+                         ("a visible layer inside nested groups", [Layer(children=[Layer(children=[Layer()])])]),
+                         ("a hidden layer above a visible one", [Layer(visible=False), Layer()])):
+        OPEN_IMAGE.get_layers = lambda layers=layers: layers
+        TEMP_IMAGES.clear()
+        scenario(png_export)
+        r = plugin._get_current_image_bitmap({})
+        check(f"bitmap preview renders an image with {name}",
+              None if r["status"] == "success" and len(TEMP_IMAGES) == 1
+              else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
+    del OPEN_IMAGE.get_layers
+
+    # image_index picks which open image is rendered, full or region.
+    second = FakeImage()
+    get_images = mod.Gimp.get_images
+    mod.Gimp.get_images = staticmethod(lambda: [OPEN_IMAGE, second])
+    try:
+        for params in ({"image_index": 1},
+                       {"image_index": 1, "region": {"origin_x": 0, "origin_y": 0,
+                                                     "width": 10, "height": 10}}):
+            scenario(png_export)
+            r = plugin._get_current_image_bitmap(params)
+            rendered = [c[2] for c in CALLS if c[:2] == ("layer", "new_from_visible")]
+            check(f"bitmap preview renders the second image for {params}",
+                  None if r["status"] == "success" and rendered == [second]
+                  else f"got {r.get('error', r['status'])}, rendered {rendered}")
+    finally:
+        mod.Gimp.get_images = get_images
+
+    # _render_visible renders the source image into the temporary one, with
+    # undo off, and moves the composite so the region's corner lands at (0, 0).
+    CALLS.clear()
+    TEMP_IMAGES.clear()
+    temp = plugin._render_visible(OPEN_IMAGE, 5, 7, 10, 10)
+    temp.delete()
+    check("_render_visible renders the source into its temporary image, offset by the region",
+          None if ("layer", "new_from_visible", OPEN_IMAGE, temp) in CALLS
+          and ("layer", "set_offsets", (-5, -7)) in CALLS
+          and ("image", "undo_disable") in CALLS else f"calls {CALLS}")
+
+    # If the rendered layer can't be added, it isn't freed with the image, so
+    # it is deleted on its own, and the image too.
+    CALLS.clear()
+    TEMP_IMAGES.clear()
+    insert_layer = FakeImage.insert_layer
+    FakeImage.insert_layer = lambda self, *a: False
+    try:
+        reason = raises(lambda: plugin._render_visible(OPEN_IMAGE, 0, 0, 10, 10), "Adding the visible layer")
+    finally:
+        FakeImage.insert_layer = insert_layer
+    check("_render_visible deletes the layer and image when adding the layer fails",
+          reason or (None if ("layer", "delete") in CALLS and len(TEMP_IMAGES) == 1
+                     and all(i.deleted for i in TEMP_IMAGES)
+                     else f"calls {CALLS}, temporary images {TEMP_IMAGES}"))
+
+    # _render_visible renders 8-bit sources at 8 bits and anything deeper at
+    # 16 bits (all PNG holds), always non-linear (sRGB): GIMP's Precision
+    # values are 100 * type + 0 / 50 / 75.
+    for source, expected in ((100, 150), (150, 150), (175, 150), (200, 250), (275, 250),
+                             (350, 250), (500, 250), (600, 250), (675, 250), (700, 250)):
+        PRECISIONS.clear()
+        OPEN_IMAGE.get_precision = lambda source=source: source
+        plugin._render_visible(OPEN_IMAGE, 0, 0, 10, 10).delete()
+        check(f"_render_visible maps precision {source} to {expected}",
+              None if PRECISIONS == [expected] else f"got {PRECISIONS}")
+    del OPEN_IMAGE.get_precision
+
+    # _export_to_path must use the GIMP 3 file-*-export procedures, and fail
+    # instead of writing PNG data under another format's name (#64, item 5).
+    out_dir = tempfile.mkdtemp()
+
+    def export(fmt, quality=80, flatten=False, image=None):
+        path = os.path.join(out_dir, f"x.{fmt}")
+        with open(path, "wb") as f:
+            f.write(b"12345")  # the fake procedure writes nothing; getsize needs a file
+        return plugin._export_to_path(image or FakeImage(), path, fmt, quality, flatten)
+
+    all_exports = {f"file-{f}-export": (SUCCESS, None) for f in ("png", "jpeg", "webp", "tiff", "bmp")}
+    for fmt, proc_name, quality in (("png", "file-png-export", None),
+                                    ("jpeg", "file-jpeg-export", 0.8),
+                                    ("JPG", "file-jpeg-export", 0.8),
+                                    ("webp", "file-webp-export", 80.0),
+                                    ("tiff", "file-tiff-export", None),
+                                    ("tif", "file-tiff-export", None),
+                                    ("bmp", "file-bmp-export", None)):
+        scenario(all_exports)
+        try:
+            size = export(fmt)
+            problem = None
+        except Exception as e:
+            problem = f"raised {e}"
+        runs = [c for c in CALLS if c[0] == "run"]
+        check(f"_export_to_path({fmt!r}) runs {proc_name} with quality {quality}",
+              problem or (None if size == 5 and runs == [("run", proc_name)]
+                          and CONFIG.get("quality") == quality
+                          and CONFIG.get("run-mode") == 1
+                          else f"size {size}, runs {runs}, config {CONFIG}"))
+
+    scenario({"file-png-export": (SUCCESS, None)})
+    problem = raises(lambda: export("jpeg"), "file-jpeg-export", "not found")
+    check("_export_to_path raises when the format's procedure is missing, without writing PNG",
+          problem or (None if not any(c[0] == "run" for c in CALLS) else f"calls {CALLS}"))
+
+    scenario(all_exports)
+    problem = raises(lambda: export("gif", flatten=True), "Unsupported export format 'gif'", "png")
+    check("_export_to_path raises for an unknown format before copying the image",
+          problem or (None if not CALLS else f"calls {CALLS}"))
+
+    for bad in (150, -1):
+        scenario(all_exports)
+        problem = raises(lambda: export("jpeg", quality=bad), "quality must be between 0 and 100")
+        check(f"_export_to_path rejects JPEG quality {bad}",
+              problem or (None if not CALLS else f"calls {CALLS}"))
+    scenario(all_exports)
+    try:
+        export("png", quality=150)
+        problem = None
+    except Exception as e:
+        problem = f"raised {e}"
+    check("_export_to_path ignores quality for PNG",
+          problem or (None if "quality" not in CONFIG and ("run", "file-png-export") in CALLS
+                      else f"calls {CALLS}, config {CONFIG}"))
+
+    scenario(all_exports)
+    problem = raises(lambda: export("png", flatten=True, image=LayerlessImage()), "no layers")
+    check("_export_to_path refuses an image without layers before copying it",
+          problem or (None if not CALLS else f"calls {CALLS}"))
+
+    # Tools exporting several files must reject a bad format before any work,
+    # not report success with a per-image error list.
+    for handler, params in (("_batch_export", {"format": "gif"}),
+                            ("_export_icon_sizes", {"format": "gif"})):
+        scenario(all_exports)
+        new_dir = os.path.join(out_dir, handler)
+        r = getattr(plugin, handler)(dict(params, output_dir=new_dir))
+        check(f"{handler[1:]} reports an error for an unsupported format before doing any work",
+              None if r["status"] == "error" and "Unsupported export format" in r["error"]
+              and not CALLS and not os.path.exists(new_dir)
+              else f"got {r}, calls {CALLS}, dir exists {os.path.exists(new_dir)}")
+
+    scenario(all_exports)
+    TEMP_IMAGES.clear()
+    new_dir = os.path.join(out_dir, "web_optimized")
+    r = plugin._export_web_optimized({"output_dir": new_dir, "jpeg_quality": 150})
+    check("export_web_optimized rejects jpeg_quality 150 before doing any work",
+          None if r["status"] == "error" and "quality must be between" in r["error"]
+          and not CALLS and not TEMP_IMAGES and not os.path.exists(new_dir)
+          else f"got {r}, calls {CALLS}, dir exists {os.path.exists(new_dir)}")
+
+    scenario(all_exports)
+    r = plugin._batch_export({"output_dir": os.path.join(out_dir, "bq"), "format": "webp",
+                              "quality": 101})
+    check("batch_export reports an error for quality 101",
+          None if r["status"] == "error" and "quality must be between" in r["error"] else f"got {r}")
+
+    scenario(all_exports)
+    r = plugin._export_image({"file_path": os.path.join(out_dir, "x.gif"), "format": "gif"})
+    check("export_image reports an error for an unsupported format",
+          None if r["status"] == "error" and "Unsupported export format" in r["error"] else f"got {r}")
+
+    print(f"\n{'FAILED' if failures else 'PASSED'}: {len(failures)} failure(s)")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

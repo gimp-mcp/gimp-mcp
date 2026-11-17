@@ -3,19 +3,120 @@
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 
 from mcp.server.fastmcp import FastMCP, Context, Image
+import argparse
+import asyncio
+import concurrent.futures
+import functools
+import os
+import re
+import shutil
+import sys
 import socket
+import queue
+import tempfile
+import threading
 import json
 import logging
 import base64
 import traceback
 import time
 from pathlib import Path
+from importlib import resources
+from typing import Literal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
 
 GIMP_HOST = 'localhost'
-GIMP_PORT = 9877
+DEFAULT_GIMP_PORT = 9877
+
+
+def _port_from_env():
+    """GIMP_MCP_PORT must match the port set in GIMP's Tools > MCP > MCP Server Settings."""
+    value = os.environ.get("GIMP_MCP_PORT", "").strip()
+    if not value:
+        return DEFAULT_GIMP_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        logger.warning(f"Ignoring invalid GIMP_MCP_PORT={value!r}; using {DEFAULT_GIMP_PORT}")
+        return DEFAULT_GIMP_PORT
+    return port
+
+
+GIMP_PORT = _port_from_env()
+
+DEFAULT_GIMP_TIMEOUT = 300.0
+
+
+def _timeout_from_env():
+    """GIMP_MCP_TIMEOUT: seconds to wait for GIMP to reply to one command."""
+    value = os.environ.get("GIMP_MCP_TIMEOUT", "").strip()
+    if not value:
+        return DEFAULT_GIMP_TIMEOUT
+    try:
+        timeout = float(value)
+    except ValueError:
+        timeout = 0.0
+    # Rejects nan and inf too: they make settimeout() fail or wait forever.
+    if not 0 < timeout < float("inf"):
+        logger.warning(f"Ignoring invalid GIMP_MCP_TIMEOUT={value!r}; using {DEFAULT_GIMP_TIMEOUT:g}")
+        return DEFAULT_GIMP_TIMEOUT
+    return timeout
+
+
+GIMP_TIMEOUT = _timeout_from_env()
+
+# Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
+# (tests/test_version_handshake.py checks this).
+SERVER_VERSION = "0.4.0"
+
+
+def _parse_version(value):
+    """Turn "1.2.3" into (1, 2, 3) so versions compare numerically; None if not parseable."""
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return None
+
+
+def version_status(plugin_version):
+    """Compare the GIMP plugin's reported version with this server's.
+
+    Returns {"plugin_version", "server_version", "version_ok"}, plus a "version_warning"
+    telling the user what to update when they don't match. Plugins from before the
+    handshake don't report a version and count as outdated.
+    """
+    status = {
+        "plugin_version": plugin_version,
+        "server_version": SERVER_VERSION,
+        "version_ok": plugin_version == SERVER_VERSION,
+    }
+    if status["version_ok"]:
+        return status
+    update_plugin = (
+        f"Update the plugin: run `{install_plugin_command()}`, then restart GIMP."
+    )
+    plugin, server = _parse_version(plugin_version), _parse_version(SERVER_VERSION)
+    if plugin_version is None:
+        status["version_warning"] = (
+            f"The GIMP plugin is older than this MCP server (v{SERVER_VERSION}) and doesn't "
+            f"report a version, so some tools may fail. {update_plugin}"
+        )
+    elif plugin is not None and server is not None and plugin > server:
+        status["version_warning"] = (
+            f"The MCP server (v{SERVER_VERSION}) is older than the GIMP plugin "
+            f"(v{plugin_version}), so some tools may fail. Update the server "
+            f"({_update_server_hint()}) and restart your MCP client."
+        )
+    else:
+        status["version_warning"] = (
+            f"The GIMP plugin (v{plugin_version}) doesn't match this MCP server "
+            f"(v{SERVER_VERSION}), so some tools may fail. {update_plugin}"
+        )
+    return status
 
 class GimpConnection:
     def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
@@ -31,12 +132,12 @@ class GimpConnection:
             self.sock.settimeout(10)
             self.sock.connect((self.host, self.port))
             # 10s was too short for flattening/scaling multi-layer PSDs and 16-bit renders
-            self.sock.settimeout(300)
+            self.sock.settimeout(GIMP_TIMEOUT)
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
         except Exception as e:
             self.sock = None
             logger.error(f"Failed to connect: {e}")
-            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server).")
+            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP server is running in GIMP (Tools > MCP > Start MCP Server, or enable autostart in Tools > MCP > MCP Server Settings) and that GIMP_MCP_PORT matches its port.")
 
     def disconnect(self):
         if self.sock:
@@ -64,55 +165,160 @@ class GimpConnection:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
             return json.loads(response_data.decode('utf-8'))
+        except TimeoutError:
+            logger.error(f"GIMP did not reply within {GIMP_TIMEOUT:g} s")
+            raise Exception(
+                f"GIMP did not reply within {GIMP_TIMEOUT:g} s. GIMP may still be running the "
+                f"command, so check the image before retrying. For longer commands, set "
+                f"GIMP_MCP_TIMEOUT (seconds) in your MCP client config."
+            )
         except Exception as e:
             logger.error(f"Communication error: {e}")
             raise Exception(f"Error communicating with GIMP: {e}")
         finally:
             self.disconnect()
 
-# Global connection
-_gimp_connection = None
-
 def get_gimp_connection():
-    global _gimp_connection
-    if _gimp_connection is None:
-        _gimp_connection = GimpConnection()
-        _gimp_connection.connect()
-    return _gimp_connection
+    """Open a new connection for each call, so calls running at the same time
+    (a cancelled call still finishing in async mode) never share a socket."""
+    conn = GimpConnection()
+    conn.connect()
+    return conn
 
-def reset_gimp_connection():
-    global _gimp_connection
-    if _gimp_connection:
-        _gimp_connection.disconnect()
-    _gimp_connection = None
+def _read_doc(name):
+    """Read a guidance doc from docs/ in a checkout, or from the installed package.
+
+    pyproject.toml ships docs/*.md in the wheel as the gimp_mcp_docs package.
+    """
+    local = Path(__file__).parent / "docs" / name
+    if local.is_file():
+        return local.read_text(encoding="utf-8")
+    return resources.files("gimp_mcp_docs").joinpath(name).read_text(encoding="utf-8")
 
 # MCP server
 mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
-@mcp.tool()
+# Tool bodies block on socket I/O to the plugin, so they run on one worker thread
+# instead of on FastMCP's event loop (issue #83). The event loop stays free to answer
+# pings and handle cancellation while GIMP works.
+#
+# The single worker takes calls from a FIFO queue, so they reach GIMP one at a time, in
+# the order they arrived, and never overlap. A cancelled call returns to the client at
+# once: if the worker had already started it, GIMP still finishes the command; if it
+# was still queued, it never runs.
+_gimp_calls = queue.SimpleQueue()
+
+
+def _gimp_worker():
+    while True:
+        future, fn, args, kwargs = _gimp_calls.get()
+        if not future.set_running_or_notify_cancel():
+            continue  # cancelled while queued
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as e:
+            future.set_exception(e)
+
+
+# Daemon, so the process can exit even while GIMP is still working on a command.
+threading.Thread(target=_gimp_worker, name="gimp-calls", daemon=True).start()
+
+
+class _GimpCallWaiter(asyncio.Future):
+    """What a tool wrapper awaits while its call is queued or running.
+
+    Cancelling it cancels the queued call immediately. asyncio.wrap_future would only
+    do that on the next event-loop iteration, and by then the worker may have started
+    a call the client was already told is cancelled.
+    """
+
+    def __init__(self, call):
+        super().__init__()
+        self._call = call  # the concurrent.futures.Future the worker runs
+        loop = self.get_loop()
+        call.add_done_callback(lambda c: loop.call_soon_threadsafe(self._copy_outcome, c))
+
+    def cancel(self, msg=None):
+        self._call.cancel()  # stops the call if the worker hasn't started it yet
+        return super().cancel(msg)
+
+    def _copy_outcome(self, call):
+        if self.done():
+            return
+        if call.cancelled():
+            super().cancel()
+        elif call.exception() is not None:
+            self.set_exception(call.exception())
+        else:
+            self.set_result(call.result())
+
+
+def gimp_tool(*tool_args, **tool_kwargs):
+    """Like @mcp.tool(), but runs the blocking tool body on the GIMP worker thread.
+
+    FastMCP gets an async wrapper; the module keeps the plain sync function, so
+    tools can still call each other (restart_server -> check_server) and tests can
+    call them directly.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            call = concurrent.futures.Future()
+            waiter = _GimpCallWaiter(call)
+            _gimp_calls.put((call, fn, args, kwargs))
+            return await waiter
+        mcp.tool(*tool_args, **tool_kwargs)(wrapper)
+        return fn
+    return decorate
+
+
+@gimp_tool()
 def check_server(ctx: Context) -> dict:
     """Check whether the GIMP MCP plugin socket is reachable and responding.
 
     Returns a status dict:
     - connected: bool
     - host / port: where it tried
+    - timeout_seconds: how long each command waits for GIMP (GIMP_MCP_TIMEOUT)
     - gimp_version: if connected successfully
-    - error: description if not connected
+    - plugin_version / server_version / version_ok: whether the GIMP plugin matches this server
+    - version_warning: present when they don't match; pass it on to the user
+    - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
+      (connected stays true and no version check is done)
 
     Use this before any other operation to verify the GIMP plugin is running.
-    If not connected, open GIMP and run Tools > Start MCP Server.
+    If not connected, open GIMP and run Tools > MCP > Start MCP Server.
     """
     try:
         test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
-        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
-        return {"connected": True, "host": GIMP_HOST, "port": GIMP_PORT, "gimp_version": version}
     except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT,
+                "timeout_seconds": GIMP_TIMEOUT, "error": str(e)}
+    if result.get("status") != "success":
+        # The plugin answered, so it's reachable, but without info there's no version to
+        # compare. Report the error rather than a misleading "plugin is outdated" warning.
+        return {
+            "connected": True,
+            "host": GIMP_HOST,
+            "port": GIMP_PORT,
+            "timeout_seconds": GIMP_TIMEOUT,
+            "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
+        }
+    results = result.get("results", {})
+    version = results.get("version", {}).get("version_method", "unknown")
+    return {
+        "connected": True,
+        "host": GIMP_HOST,
+        "port": GIMP_PORT,
+        "timeout_seconds": GIMP_TIMEOUT,
+        "gimp_version": version,
+        **version_status(results.get("mcp_plugin_version")),
+    }
 
 
-@mcp.tool()
+@gimp_tool()
 def restart_server(ctx: Context) -> dict:
     """Drop and re-establish the connection to the GIMP MCP plugin.
 
@@ -123,12 +329,13 @@ def restart_server(ctx: Context) -> dict:
 
     Returns the new connection status (same format as check_server).
     """
-    reset_gimp_connection()
+    # Every call opens its own connection, so there's no shared socket to drop.
+    # This runs on the GIMP worker thread (see gimp_tool), so the sleep doesn't block the event loop.
     time.sleep(0.5)
     return check_server(ctx)
 
 
-@mcp.tool()
+@gimp_tool()
 def new_canvas(
     ctx: Context,
     width: int,
@@ -179,8 +386,8 @@ def new_canvas(
         raise Exception(f"Failed to create new canvas: {e}")
 
 
-@mcp.tool()
-def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
+@gimp_tool()
+def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None, image_index: int = 0) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
 
     No size restrictions — pass any max_width/max_height you need.
@@ -191,12 +398,21 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
     2. Region extraction with optional scaling (pass region dict)
 
     Parameters:
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved).
-      Omit for full resolution.
-    - region: Dictionary with keys:
-        - origin_x, origin_y: Top-left corner of region to extract
-        - width, height: Dimensions of region to extract
-        - max_width, max_height: Optional scaling for the extracted region
+    - image_index: Which open image to fetch (default: 0 = most recent)
+    - max_width, max_height: Bounds for scaling (aspect-ratio preserved), at least 1.
+      Either can be given alone. They only shrink: an image already within them is
+      returned at its own size. Omit both for full resolution.
+    - region: Dictionary with keys (origin_x, origin_y, width and height are required;
+      omit region, not pass {}, for the full image):
+        - origin_x, origin_y: Top-left corner of region to extract, at least 0
+        - width, height: Dimensions of region to extract, at least 1
+        - max_width, max_height: Optional scaling for the extracted region, at least 1;
+          either one replaces the top-level bounds
+
+    The bitmap is the visible composite (hidden and 0%-opacity layers are left out,
+    blend modes and layer filters apply), as GIMP displays it: a visible channel,
+    including Quick Mask, tints it. An image with nothing visible returns an
+    error. The user's selection and clipboard are not changed.
 
     Examples:
     - Full image at full res: get_image_bitmap()
@@ -220,7 +436,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         conn = get_gimp_connection()
         
         # Build parameters for the bitmap request
-        params = {}
+        params = {"image_index": image_index}
         if max_width is not None:
             params["max_width"] = max_width
         if max_height is not None:
@@ -245,7 +461,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         raise Exception(f"Failed to get image bitmap: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_image_metadata(ctx: Context) -> dict:
     """Get metadata about the current open image in GIMP without the bitmap data.
     
@@ -277,7 +493,7 @@ def get_image_metadata(ctx: Context) -> dict:
         raise Exception(f"Failed to get image metadata: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_gimp_info(ctx: Context) -> dict:
     """Get comprehensive information about the GIMP installation and environment.
 
@@ -288,6 +504,7 @@ def get_gimp_info(ctx: Context) -> dict:
     - Available plugins and procedures
     - System configuration
     - Runtime environment details
+    - timeout_seconds: how long each command waits for GIMP (GIMP_MCP_TIMEOUT)
 
     This information helps AI assistants provide better support and troubleshooting
     by understanding the specific GIMP setup they're working with.
@@ -302,14 +519,17 @@ def get_gimp_info(ctx: Context) -> dict:
         conn = get_gimp_connection()
         result = conn.send_command("get_gimp_info")
         if result["status"] == "success":
-            return result["results"]
+            info = result["results"]
+            info.update(version_status(info.get("mcp_plugin_version")))
+            info["timeout_seconds"] = GIMP_TIMEOUT
+            return info
         else:
             raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to get GIMP info: {e}")
 
-@mcp.tool()
+@gimp_tool()
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
@@ -324,13 +544,20 @@ def get_state_snapshot(
 
     Parameters:
     - image_index: Which open image to snapshot (default: 0 = most recent)
-    - max_size: Maximum width/height of the returned preview in pixels (default: 512)
-    - region: Optional dict {x, y, width, height} to zoom into a specific area
+    - max_size: Maximum width/height of the returned preview in pixels (default: 512,
+                0 = no scaling). Only shrinks: a smaller image or region comes back
+                at its own size
+    - region: Optional dict {x, y, width, height} to zoom into a specific area.
+              Values must be integers, not booleans. x and y default to 0 and must
+              be at least 0; width and height are required and must be at least 1.
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - PNG image of the current GIMP canvas state (with alpha if present)
+    - RGBA PNG of the visible composite (hidden and 0%-opacity layers are left out,
+      blend modes and layer filters apply), as GIMP displays it: a visible channel,
+      including Quick Mask, tints it. An image with nothing visible returns an
+      error. The user's selection and clipboard are not changed.
 
     Typical agent workflow:
         1. open_image / new_canvas
@@ -343,18 +570,30 @@ def get_state_snapshot(
     try:
         if label:
             print(f"[snapshot] {label}")
-        conn = get_gimp_connection()
+        # The plug-in would report this as max_width / max_height, which the
+        # caller never passed
+        if max_size is not None and max_size < 0:
+            raise ValueError(f"max_size must be at least 0 (0 means no scaling), got {max_size}")
         params: dict = {"image_index": image_index}
         if max_size:
             params["max_width"]  = max_size
             params["max_height"] = max_size
-        if region:
+        if region is not None:
+            for key, minimum in [("x", 0), ("y", 0), ("width", 1), ("height", 1)]:
+                if key in ("width", "height") and key not in region:
+                    raise ValueError(f"Region parameter '{key}' is required")
+                value = region.get(key, 0)
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ValueError(f"Region parameter '{key}' must be of type int, got {type(value).__name__}")
+                if value < minimum:
+                    raise ValueError(f"Region parameter '{key}' must be at least {minimum}, got {value}")
             params["region"] = {
-                "origin_x": int(region.get("x", 0)),
-                "origin_y": int(region.get("y", 0)),
-                "width":    int(region.get("width",  max_size)),
-                "height":   int(region.get("height", max_size)),
+                "origin_x": region.get("x", 0),
+                "origin_y": region.get("y", 0),
+                "width":    region["width"],
+                "height":   region["height"],
             }
+        conn = get_gimp_connection()
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
             img_info  = result["results"]
@@ -367,7 +606,7 @@ def get_state_snapshot(
         raise Exception(f"get_state_snapshot failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_context_state(ctx: Context) -> dict:
     """Get the current GIMP context state (colors, brush, settings).
 
@@ -404,7 +643,7 @@ def get_context_state(ctx: Context) -> dict:
         raise Exception(f"Failed to get context state: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
     """Call GIMP 3.2 API methods through PyGObject console.
 
@@ -496,8 +735,7 @@ def gimp_best_practices() -> str:
     This prompt provides critical DO/DON'T patterns that help AI assistants
     and users avoid common mistakes when working with GIMP through MCP.
     """
-    docs_path = Path(__file__).parent / "docs" / "best_practices.md"
-    return docs_path.read_text()
+    return _read_doc("best_practices.md")
 
 @mcp.prompt(
     description="Iterative workflow guidance for building complex images with proper validation and layer management"
@@ -512,14 +750,13 @@ def gimp_iterative_workflow() -> str:
     - Fix problems properly instead of painting over them
     - Leverage GIMP's professional features for clean, organized work
     """
-    docs_path = Path(__file__).parent / "docs" / "iterative_workflow.md"
-    return docs_path.read_text()
+    return _read_doc("iterative_workflow.md")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 1 — File Operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def open_image(ctx: Context, file_path: str) -> dict:
     """Open an image file in GIMP and create a display window.
 
@@ -544,7 +781,76 @@ def open_image(ctx: Context, file_path: str) -> dict:
         raise Exception(f"open_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
+def open_image_as_layer(
+    ctx: Context,
+    file_path: str,
+    image_index: int = 0,
+    layer_name: str | None = None,
+    position: int = 0,
+    scale: Literal["none", "fit", "canvas"] = "none",
+    offset_x: int | None = None,
+    offset_y: int | None = None,
+) -> dict:
+    """Import an image file as a new layer in an open image.
+
+    Use this to bring another image (texture, reference, cutout, background) into
+    the image being edited. No new image window is opened. Unlike GIMP's
+    File > Open as Layers, which keeps a file's layers separate, the file's visible
+    content always becomes one new layer: a multi-layer file (XCF, PSD, ORA) is
+    merged, and transparency is kept. The layer is converted to the image's color
+    mode; in an indexed image its colors are reduced to that image's palette, so
+    convert the image to RGB first to keep them. An animated GIF loads as one
+    visible layer per frame, so the imported layer is all frames stacked (for a GIF
+    of opaque full-size frames, that looks like the last frame); multi-page files
+    may behave the same way. The new layer becomes the selected layer, so tools
+    that default to the selected layer act on it. If the image has a floating
+    selection (a user can make one in GIMP), anchor it first, with call_api:
+    Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+    isn't selected, and position 0 puts it second from the top (the result reports
+    the real position).
+
+    Parameters:
+    - file_path: Absolute path to the image file to import (PNG, JPEG, XCF, etc.);
+      a leading "~" is expanded. Relative paths are rejected.
+    - image_index: Index of the image to add the layer to (default 0)
+    - layer_name: Name for the new layer (default: the file name without extension).
+      GIMP adds a suffix such as " #1" if the name is taken; the result has the real name.
+    - position: Stack position, 0 = top (default); larger values go further down.
+      A value past the bottom puts the layer at the bottom.
+    - scale: "none" = the file's own size (default); "fit" = scale up or down to fit
+      inside the canvas, keeping the aspect ratio; "canvas" = stretch to the canvas size
+    - offset_x, offset_y: Position of the layer's top-left corner on the canvas.
+      Each one left out is centered on the canvas.
+
+    Returns:
+    - layer_name, layer_id: the new layer
+    - width, height: layer size after scaling
+    - offset_x, offset_y: where the layer was placed
+    - position: the layer's actual stack position (0 = top)
+    - source_width, source_height: the file's own dimensions
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("open_image_as_layer", {
+            # Expanded here: a Snap GIMP's own home directory is not the user's.
+            "file_path": os.path.expanduser(file_path),
+            "image_index": image_index,
+            "layer_name": layer_name,
+            "position": position,
+            "scale": scale,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+        })
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"open_image_as_layer failed: {e}")
+
+
+@gimp_tool()
 def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
     """Save the current image as a GIMP XCF file (preserves all layers and metadata).
 
@@ -567,7 +873,7 @@ def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
         raise Exception(f"save_xcf failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_image(
     ctx: Context,
     file_path: str,
@@ -576,12 +882,13 @@ def export_image(
     flatten: bool = True,
     image_index: int = 0
 ) -> dict:
-    """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
+    """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF, BMP).
 
     Parameters:
     - file_path: Absolute path for the output file
-    - format: Output format — "png" (default), "jpeg", "webp", "tiff"
-    - quality: JPEG/WEBP quality 1-100 (default 90; ignored for PNG/TIFF)
+    - format: Output format — "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp";
+      other formats are rejected
+    - quality: JPEG/WEBP quality 0-100 (default 90; ignored for PNG/TIFF/BMP)
     - flatten: Flatten all layers before export (default True)
     - image_index: Index of the image to export (default 0)
 
@@ -605,7 +912,7 @@ def export_image(
         raise Exception(f"export_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def batch_export(
     ctx: Context,
     output_dir: str,
@@ -618,8 +925,8 @@ def batch_export(
 
     Parameters:
     - output_dir: Directory to write exported files into
-    - format: "png", "jpeg", "webp", "tiff" (default "png")
-    - quality: JPEG/WEBP quality (default 90)
+    - format: "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp"; other formats are rejected
+    - quality: JPEG/WEBP quality 0-100 (default 90)
     - name_pattern: Filename template — use {name} for image name, {index} for position
     - image_index: If set, export only that image; omit to export all open images
 
@@ -651,7 +958,7 @@ def batch_export(
 # CATEGORY 2 — Image Adjustments
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Automatically stretch the tonal range of an image (auto levels / auto stretch contrast).
 
@@ -672,7 +979,7 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
         raise Exception(f"auto_levels failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_curves(
     ctx: Context,
     preset: str = "s_curve",
@@ -709,7 +1016,7 @@ def adjust_curves(
         raise Exception(f"adjust_curves failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_brightness_contrast(
     ctx: Context,
     brightness: int = 0,
@@ -743,7 +1050,7 @@ def adjust_brightness_contrast(
         raise Exception(f"adjust_brightness_contrast failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_hue_saturation(
     ctx: Context,
     hue: float = 0,
@@ -783,7 +1090,7 @@ def adjust_hue_saturation(
         raise Exception(f"adjust_hue_saturation failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_color_balance(
     ctx: Context,
     cyan_red: float = 0,
@@ -823,7 +1130,7 @@ def adjust_color_balance(
         raise Exception(f"adjust_color_balance failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def sharpen(
     ctx: Context,
     amount: float = 50.0,
@@ -860,7 +1167,7 @@ def sharpen(
         raise Exception(f"sharpen failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def blur(
     ctx: Context,
     radius_x: float = 5.0,
@@ -894,7 +1201,7 @@ def blur(
         raise Exception(f"blur failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def denoise(
     ctx: Context,
     strength: int = 50,
@@ -925,7 +1232,7 @@ def denoise(
         raise Exception(f"denoise failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def desaturate(
     ctx: Context,
     mode: str = "luminosity",
@@ -956,7 +1263,7 @@ def desaturate(
         raise Exception(f"desaturate failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def invert_colors(
     ctx: Context,
     image_index: int = 0,
@@ -988,7 +1295,7 @@ def invert_colors(
 # CATEGORY 3 — Resize & Transform
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def scale_image(
     ctx: Context,
     width: int,
@@ -1022,7 +1329,7 @@ def scale_image(
         raise Exception(f"scale_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def scale_to_fit(
     ctx: Context,
     max_width: int,
@@ -1056,7 +1363,7 @@ def scale_to_fit(
         raise Exception(f"scale_to_fit failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def crop_to_selection(
     ctx: Context,
     autocrop: bool = False,
@@ -1084,7 +1391,7 @@ def crop_to_selection(
         raise Exception(f"crop_to_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def crop_to_rect(
     ctx: Context,
     x: int,
@@ -1119,7 +1426,7 @@ def crop_to_rect(
         raise Exception(f"crop_to_rect failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def rotate_image(
     ctx: Context,
     angle: float,
@@ -1148,7 +1455,7 @@ def rotate_image(
         raise Exception(f"rotate_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def flip_image(
     ctx: Context,
     direction: str = "horizontal",
@@ -1176,7 +1483,7 @@ def flip_image(
         raise Exception(f"flip_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def resize_canvas(
     ctx: Context,
     width: int,
@@ -1217,7 +1524,7 @@ def resize_canvas(
 # CATEGORY 4 — Selections
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def select_rectangle(
     ctx: Context,
     x: int,
@@ -1253,7 +1560,7 @@ def select_rectangle(
         raise Exception(f"select_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_ellipse(
     ctx: Context,
     x: int,
@@ -1289,7 +1596,7 @@ def select_ellipse(
         raise Exception(f"select_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_by_color(
     ctx: Context,
     color: str,
@@ -1326,7 +1633,7 @@ def select_by_color(
         raise Exception(f"select_by_color failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_all(ctx: Context, image_index: int = 0) -> dict:
     """Select the entire image canvas.
 
@@ -1346,7 +1653,7 @@ def select_all(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_all failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_none(ctx: Context, image_index: int = 0) -> dict:
     """Remove / deselect all selections.
 
@@ -1366,7 +1673,7 @@ def select_none(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_none failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def invert_selection(ctx: Context, image_index: int = 0) -> dict:
     """Invert the current selection (select what is not selected).
 
@@ -1386,7 +1693,7 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"invert_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def modify_selection(
     ctx: Context,
     operation: str,
@@ -1421,7 +1728,7 @@ def modify_selection(
 # CATEGORY 5 — Layer Operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def create_layer(
     ctx: Context,
     name: str = "New Layer",
@@ -1437,14 +1744,31 @@ def create_layer(
 
     Parameters:
     - name: Layer name (default "New Layer")
-    - width, height: Layer dimensions; defaults to image dimensions
-    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color
+    - width, height: Layer dimensions in pixels, from 1 to 524288 inclusive;
+      omitted or None values use the corresponding image dimension. Zero is invalid.
+    - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
+      it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
     - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
-    - position: Stack position — -1 = top (default), 0 = bottom
+    - position: 0 or more = index among the image's top-level layers, counted from
+      the top (0 = top); a value past the bottom puts the layer at the bottom.
+      -1 (default) = directly above the selected layer, inside its group if it is in
+      one; if a group is selected, at the top inside it. With several selected:
+      above the highest if they are non-group layers with the same parent; at the
+      top inside a selected group if the others are non-group layers directly
+      inside it; otherwise, or with nothing selected, at the top of the image.
+      Other negative values are rejected. Prefer 0 or more: other tools can't find a
+      layer inside a group by layer_name.
+      The new layer becomes the selected layer. If the image has a floating
+      selection (a user can make one in GIMP), anchor it first, with call_api:
+      Gimp.floating_sel_anchor(image.get_floating_sel()). Until then the new layer
+      isn't selected, and position 0 puts it second from the top.
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, width, height, position}
+    Returns: {layer_name, layer_id, width, height, position, parent}; position is where
+    the layer landed (0 = top), which can differ from the value passed in. parent is
+    the name of the layer group it went into (only possible with -1), and position is
+    then its index in that group; null at the top level.
     """
     try:
         conn = get_gimp_connection()
@@ -1461,7 +1785,7 @@ def create_layer(
         raise Exception(f"create_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def duplicate_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -1489,7 +1813,7 @@ def duplicate_layer(
         raise Exception(f"duplicate_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def delete_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -1522,7 +1846,7 @@ def delete_layer(
         raise Exception(f"delete_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def rename_layer(
     ctx: Context,
     new_name: str,
@@ -1556,7 +1880,7 @@ def rename_layer(
         raise Exception(f"rename_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_layer_properties(
     ctx: Context,
     layer_name: str | None = None,
@@ -1592,7 +1916,7 @@ def set_layer_properties(
         raise Exception(f"set_layer_properties failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def reorder_layer(
     ctx: Context,
     new_position: int,
@@ -1603,8 +1927,18 @@ def reorder_layer(
     """Move a layer to a new stack position.
 
     Parameters:
-    - new_position: Target stack index (0 = bottom)
-    - layer_name / layer_index: Identify the layer (defaults to active layer)
+    - new_position: Target stack index among the image's top-level layers, counted
+      from the top: 0 = top, 1 = second from the top, and so on; a value past the
+      bottom moves the layer to the bottom, and a negative value moves it to the top.
+      A layer inside a layer group is moved out of the group.
+    - layer_name / layer_index: Identify the layer (defaults to the selected layer;
+      if several are selected, any one of them, so select only one). Both find only
+      top-level layers. To move a grouped layer, select it and leave both out, e.g.
+      via call_api: image.set_selected_layers([layer]). A layer just made by
+      create_layer is already selected. But while the image has a floating
+      selection, that is always the selected layer, so leaving both out moves it.
+      Anchor it before calling create_layer: anchoring afterwards selects the layer
+      it was pasted on, not the new one.
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -1623,7 +1957,7 @@ def reorder_layer(
         raise Exception(f"reorder_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def flatten_image(ctx: Context, image_index: int = 0) -> dict:
     """Flatten all layers into a single background layer.
 
@@ -1643,7 +1977,7 @@ def flatten_image(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"flatten_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
     """Merge all visible layers into a single layer.
 
@@ -1663,7 +1997,7 @@ def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"merge_visible_layers failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def list_layers(ctx: Context, image_index: int = 0) -> dict:
     """List all layers in an image with their properties.
 
@@ -1687,7 +2021,7 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
 # CATEGORY 6 — Color & Paint
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def fill_layer(
     ctx: Context,
     color: str,
@@ -1716,7 +2050,7 @@ def fill_layer(
         raise Exception(f"fill_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_selection(
     ctx: Context,
     color: str | None = None,
@@ -1725,6 +2059,9 @@ def fill_selection(
     layer_name: str | None = None
 ) -> dict:
     """Fill the current selection with a color or fill type.
+
+    Returns an error when nothing is selected; use fill_layer to fill a
+    whole layer.
 
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
@@ -1748,7 +2085,7 @@ def fill_selection(
         raise Exception(f"fill_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_colors(
     ctx: Context,
     foreground: str | None = None,
@@ -1775,7 +2112,7 @@ def set_colors(
         raise Exception(f"set_colors failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_line(
     ctx: Context,
     x1: float,
@@ -1816,7 +2153,7 @@ def draw_line(
         raise Exception(f"draw_line failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_rectangle(
     ctx: Context,
     x: int,
@@ -1855,7 +2192,7 @@ def draw_rectangle(
         raise Exception(f"draw_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_ellipse(
     ctx: Context,
     x: int,
@@ -1894,7 +2231,7 @@ def draw_ellipse(
         raise Exception(f"draw_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_rectangle(
     ctx: Context,
     x: int,
@@ -1930,7 +2267,7 @@ def fill_rectangle(
         raise Exception(f"fill_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_ellipse(
     ctx: Context,
     x: int,
@@ -1966,7 +2303,7 @@ def fill_ellipse(
         raise Exception(f"fill_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def gradient_fill(
     ctx: Context,
     color1: str = "black",
@@ -2012,13 +2349,13 @@ def gradient_fill(
 # CATEGORY 7 — Text
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def add_text(
     ctx: Context,
     text: str,
     x: int = 0,
     y: int = 0,
-    font: str = "Sans",
+    font: str = "Sans-serif",
     size: int = 24,
     color: str = "black",
     image_index: int = 0
@@ -2028,12 +2365,16 @@ def add_text(
     Parameters:
     - text: The text string to render
     - x, y: Position of the text layer's top-left corner (default 0, 0)
-    - font: Font family name — "Sans" (default), "Serif", etc.
+    - font: Font name, as listed by list_fonts (default "Sans-serif"). Common
+      GIMP 2 aliases (such as "Sans") resolve to their GIMP 3 names; an unknown
+      name falls back to a default font and adds a warning to the result.
     - size: Font size in pixels (default 24)
     - color: Text color (CSS name, hex, or rgb() string; default "black")
     - image_index: Target image index (default 0)
 
-    Returns: {layer_name, layer_id, text_width, text_height, position}
+    Returns: {layer_name, layer_id, text_width, text_height, position, font},
+    plus requested_font when it differs from font and warning when a fallback
+    font was substituted.
     """
     try:
         conn = get_gimp_connection()
@@ -2050,7 +2391,7 @@ def add_text(
         raise Exception(f"add_text failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def edit_text(
     ctx: Context,
     layer_name: str,
@@ -2065,12 +2406,16 @@ def edit_text(
     Parameters:
     - layer_name: Name of the text layer to edit
     - text: New text content (omit to leave unchanged)
-    - font: New font family (omit to leave unchanged)
+    - font: New font name, as listed by list_fonts (omit, or pass an empty name,
+      to leave unchanged). Common GIMP 2 aliases resolve to their GIMP 3 names; an unknown name falls
+      back to a default font and adds a warning to the result.
     - size: New font size in pixels (omit to leave unchanged)
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns {status}, plus font (the applied font) when a font name was given,
+    requested_font when it differs from font, and warning when a fallback font
+    was substituted.
     """
     try:
         conn = get_gimp_connection()
@@ -2087,7 +2432,7 @@ def edit_text(
         raise Exception(f"edit_text failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def list_fonts(ctx: Context, filter: str | None = None) -> dict:
     """List available fonts installed in GIMP.
 
@@ -2111,7 +2456,7 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # CATEGORY 8 — Filters & Effects
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def apply_drop_shadow(
     ctx: Context,
     offset_x: int = 5,
@@ -2149,7 +2494,7 @@ def apply_drop_shadow(
         raise Exception(f"apply_drop_shadow failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_gaussian_blur(
     ctx: Context,
     radius: float = 5.0,
@@ -2178,7 +2523,7 @@ def apply_gaussian_blur(
         raise Exception(f"apply_gaussian_blur failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_pixelate(
     ctx: Context,
     block_size: int = 10,
@@ -2207,7 +2552,7 @@ def apply_pixelate(
         raise Exception(f"apply_pixelate failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_emboss(
     ctx: Context,
     azimuth: float = 315,
@@ -2221,7 +2566,7 @@ def apply_emboss(
     Parameters:
     - azimuth: Light direction in degrees 0-360 (default 315 = top-left)
     - elevation: Light elevation angle 0-90 (default 45)
-    - depth: Effect depth/intensity (default 2)
+    - depth: Effect depth/intensity, 1-100 (default 2)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2241,19 +2586,19 @@ def apply_emboss(
         raise Exception(f"apply_emboss failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_vignette(
     ctx: Context,
-    softness: float = 3.0,
-    shape: float = 1.0,
+    softness: float = 0.8,
+    shape: str = "circle",
     layer_name: str | None = None,
     image_index: int = 0
 ) -> dict:
     """Apply a vignette darkening effect around the edges of a layer.
 
     Parameters:
-    - softness: Edge softness / fade width (default 3.0)
-    - shape: Shape factor — 1.0 = elliptical (default), values >1 = more rectangular
+    - softness: Edge softness / fade width, 0.0-1.0 (default 0.8)
+    - shape: "circle" (default), "square", "diamond", "horizontal" or "vertical"
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2273,7 +2618,7 @@ def apply_vignette(
         raise Exception(f"apply_vignette failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_noise(
     ctx: Context,
     amount: float = 0.2,
@@ -2306,7 +2651,7 @@ def apply_noise(
 # CATEGORY 9 — Export Pipelines
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def export_icon_sizes(
     ctx: Context,
     output_dir: str,
@@ -2324,7 +2669,7 @@ def export_icon_sizes(
     - output_dir: Directory to write icon files into
     - platform: "android" (default) or "ios"
     - source_image_index: Image to use as source (default 0)
-    - format: Output format — "png" (default)
+    - format: Output format — "png" (default), "jpeg"/"jpg", "webp", "tiff"/"tif", "bmp"
 
     Returns: {exported: [{size, file_path}], count, platform}
     """
@@ -2342,7 +2687,7 @@ def export_icon_sizes(
         raise Exception(f"export_icon_sizes failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_web_optimized(
     ctx: Context,
     output_dir: str,
@@ -2356,7 +2701,7 @@ def export_web_optimized(
 
     Parameters:
     - output_dir: Directory to write output files
-    - jpeg_quality: JPEG quality 1-100 (default 85)
+    - jpeg_quality: JPEG quality 0-100 (default 85)
     - png_compression: PNG compression level 0-9 (default 9)
     - max_width / max_height: Optional scaling before export
     - image_index: Source image index (default 0)
@@ -2381,7 +2726,7 @@ def export_web_optimized(
         raise Exception(f"export_web_optimized failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def warp_region(
     ctx: Context,
     vectors: list,
@@ -2427,7 +2772,7 @@ def warp_region(
         raise Exception(f"warp_region failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def batch_resize(
     ctx: Context,
     width: int | None = None,
@@ -2458,7 +2803,7 @@ def batch_resize(
         raise Exception(f"batch_resize failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_sprite_sheet(
     ctx: Context,
     output_path: str,
@@ -2467,13 +2812,19 @@ def export_sprite_sheet(
     source: str = "layers",
     image_index: int = 0
 ) -> dict:
-    """Combine multiple frames into a sprite sheet PNG.
+    """Combine multiple frames into a sprite sheet PNG with a transparent background.
+
+    Every cell has the size of the first frame; larger frames are cut to it. Each frame is
+    drawn at full opacity in Normal mode, with its mask and filters; hidden layers are made
+    visible and included.
 
     Parameters:
     - output_path: Absolute path for the output PNG file
     - columns: Number of columns in the grid (defaults to square root of frame count)
     - padding: Pixel gap between frames (default 0)
-    - source: "layers" (each layer is a frame; default) or "images" (each open image)
+    - source: "layers" (each layer is a frame, starting at the layer's top-left corner;
+      default) or "images" (each open image's top layer is a frame, at its position on
+      the canvas; newest image first)
     - image_index: Source image when source="layers" (default 0)
 
     Returns: {file_path, columns, rows, frame_width, frame_height, count}
@@ -2492,7 +2843,7 @@ def export_sprite_sheet(
         raise Exception(f"export_sprite_sheet failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_social_media_kit(
     ctx: Context,
     output_dir: str,
@@ -2532,7 +2883,7 @@ def export_social_media_kit(
 # CATEGORY 10 — Utility
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def list_images(ctx: Context) -> dict:
     """List all images currently open in GIMP.
 
@@ -2552,7 +2903,7 @@ def list_images(ctx: Context) -> dict:
         raise Exception(f"list_images failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_active_image(ctx: Context, image_index: int) -> dict:
     """Raise a specific image to the front / make it active in GIMP.
 
@@ -2572,7 +2923,7 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
         raise Exception(f"set_active_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable undo, so this
     tool always returns an error. Use Edit > Undo (Ctrl+Z) in GIMP, or re-open
@@ -2595,7 +2946,7 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"undo failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable redo, so this
     tool always returns an error. Use Edit > Redo (Ctrl+Y) in GIMP.
@@ -2617,7 +2968,7 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"redo failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def convert_color_mode(
     ctx: Context,
     mode: str,
@@ -2646,7 +2997,7 @@ def convert_color_mode(
         raise Exception(f"convert_color_mode failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def close_image(
     ctx: Context,
     image_index: int = 0,
@@ -2673,7 +3024,7 @@ def close_image(
         raise Exception(f"close_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
     """Get the bounding rectangle of the current selection.
 
@@ -2693,7 +3044,7 @@ def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"get_selection_bounds failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_pixel_color(
     ctx: Context,
     x: int,
@@ -2728,7 +3079,7 @@ def get_pixel_color(
         raise Exception(f"get_pixel_color failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_histogram(
     ctx: Context,
     channel: str = "value",
@@ -2755,8 +3106,178 @@ def get_histogram(
         raise Exception(f"get_histogram failed: {e}")
 
 
-def main():
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin installation (`gimp-mcp-plugin install-plugin`)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLUGIN_NAME = "gimp-mcp-plugin"
+# Shipped next to this module, both in a git checkout and in the installed package
+# (pyproject.toml lists it as an extra module).
+PLUGIN_SOURCE = Path(__file__).resolve().parent / f"{PLUGIN_NAME}.py"
+
+
+def _running_from_checkout():
+    """True when running from a source checkout rather than an installed package."""
+    return not {"site-packages", "dist-packages"} & set(Path(__file__).resolve().parts)
+
+
+def install_plugin_command():
+    """The command that installs the plugin matching this server's version."""
+    if _running_from_checkout():
+        return f'uv run --directory "{Path(__file__).resolve().parent}" gimp_mcp_server.py install-plugin'
+    return f"uvx gimp-mcp-plugin@{SERVER_VERSION} install-plugin"
+
+
+def _update_server_hint():
+    """How to update the server, for the version warning."""
+    if _running_from_checkout():
+        return "git pull in the gimp-mcp checkout"
+    return "use gimp-mcp-plugin@latest in your MCP client config"
+
+
+def _gimp_config_bases():
+    """Directories that hold GIMP's per-version config dirs (3.0, 3.2, ...) on this platform."""
+    home = Path.home()
+    if os.name == "nt":
+        return _windows_config_bases()
+    if sys.platform == "darwin":
+        return [home / "Library" / "Application Support" / "GIMP"]
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
+    return [
+        Path(xdg) / "GIMP",
+        home / "snap" / "gimp" / "current" / ".config" / "GIMP",  # Snap
+        home / ".var" / "app" / "org.gimp.GIMP" / "config" / "GIMP",  # Flatpak
+    ]
+
+
+def _windows_config_bases():
+    """%APPDATA%\\GIMP, then the GIMP folders of MSIX (Microsoft Store) packages.
+
+    An MSIX GIMP whose %APPDATA%\\GIMP\\<ver> folder doesn't exist keeps its config in
+    %LOCALAPPDATA%\\Packages\\<package>\\LocalCache\\Roaming\\GIMP (see GIMP's gimpenv.c).
+    """
+    bases = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        bases.append(Path(appdata) / "GIMP")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        bases += sorted((Path(local) / "Packages").glob("*/LocalCache/Roaming/GIMP"))
+    return bases
+
+
+def find_gimp_config_dir():
+    """Return the newest GIMP 3.x per-user config dir, or None if GIMP 3 was never started.
+
+    GIMP creates a new dir per minor version (3.0, 3.2, ...); GIMP3_DIRECTORY overrides it.
+    On a version tie, the earlier base in _gimp_config_bases() wins.
+    """
+    override = os.environ.get("GIMP3_DIRECTORY")
+    if override:
+        path = Path(override).expanduser()
+        # GIMP resolves a relative GIMP3_DIRECTORY against the home dir, not the cwd.
+        return path if path.is_absolute() else Path.home() / path
+    candidates = []
+    for priority, base in enumerate(_gimp_config_bases()):
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            version = _parse_version(child.name)
+            if child.is_dir() and version and version[0] == 3:
+                candidates.append((version, -priority, child))
+    return max(candidates)[2] if candidates else None
+
+
+def _file_plugin_version(path):
+    """PLUGIN_VERSION from a plugin file, "unknown" for one predating it, None if missing."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    match = re.search(r'^PLUGIN_VERSION = "([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+def install_plugin(gimp_dir=None, dry_run=False):
+    """Copy the bundled plugin into GIMP's plug-ins folder. Returns a summary dict."""
+    gimp_dir = Path(gimp_dir).expanduser() if gimp_dir else find_gimp_config_dir()
+    if gimp_dir is None:
+        raise RuntimeError(
+            "No GIMP 3 config folder found. Start GIMP once so it creates one, or pass "
+            "--gimp-dir with the folder shown in GIMP's Edit > Preferences > Folders "
+            "(the parent of its plug-ins folder, e.g. ~/.config/GIMP/3.2)."
+        )
+    if not PLUGIN_SOURCE.is_file():
+        raise RuntimeError(f"Bundled plugin not found at {PLUGIN_SOURCE}")
+    target = gimp_dir / "plug-ins" / PLUGIN_NAME / f"{PLUGIN_NAME}.py"
+    result = {
+        "gimp_dir": str(gimp_dir),
+        "target": str(target),
+        "previous_version": _file_plugin_version(target),
+        "new_version": _file_plugin_version(PLUGIN_SOURCE),
+        "dry_run": dry_run,
+    }
+    if not dry_run:
+        _copy_plugin(target)
+    return result
+
+
+def _copy_plugin(target):
+    """Copy the bundled plugin to target, replacing it only once the new copy is complete.
+
+    Writing to a temp file first means a failed copy (e.g. disk full) leaves any
+    installed plugin intact instead of truncated.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copyfile(PLUGIN_SOURCE, tmp)
+        if os.name != "nt":
+            tmp.chmod(0o755)  # GIMP only runs plug-ins that are executable
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _install_plugin_cli(argv):
+    """`install-plugin` subcommand: parse arguments, install, print a summary. Returns the exit code."""
+    parser = argparse.ArgumentParser(
+        prog="gimp-mcp-plugin install-plugin",
+        description="Install or update the GIMP MCP plugin into GIMP 3's plug-ins folder.",
+    )
+    parser.add_argument("--gimp-dir", help="GIMP config folder, e.g. ~/.config/GIMP/3.2 "
+                        "(default: the newest GIMP 3.x folder found)")
+    parser.add_argument("--dry-run", action="store_true", help="show what would be done")
+    args = parser.parse_args(argv)
+    try:
+        r = install_plugin(args.gimp_dir, args.dry_run)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    previous = r["previous_version"]
+    change = "new install" if previous is None else f"replacing version {previous}"
+    verb = "Would install" if r["dry_run"] else "Installed"
+    print(f"{verb} GIMP MCP plugin {r['new_version']} ({change})")
+    print(f"  into {r['target']}")
+    if not r["dry_run"]:
+        print("Restart GIMP to load it, then start it from Tools > MCP > Start MCP Server.")
+    return 0
+
+
+def main(argv=None):
+    """Run the MCP server, or `install-plugin` to install the GIMP plugin."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "install-plugin":
+        sys.exit(_install_plugin_cli(argv[1:]))
+    if argv:
+        print("usage: gimp-mcp-plugin [install-plugin [--gimp-dir DIR] [--dry-run]]",
+              file=sys.stderr)
+        sys.exit(2)
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

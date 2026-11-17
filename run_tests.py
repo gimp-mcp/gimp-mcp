@@ -71,7 +71,25 @@ t('list_images',      cmd('list_images', {}))
 t('get_metadata',     cmd('get_image_metadata'))
 t('list_layers',      cmd('list_layers', {'image_index': 0}))
 t('pixel_color',      cmd('get_pixel_color', {'image_index': 0, 'x': 10, 'y': 10}))
-t('get_histogram',    cmd('get_histogram', {'image_index': 0, 'channel': 'value'}))
+_hist = t('get_histogram', cmd('get_histogram', {'image_index': 0, 'channel': 'value'}))
+# Regression #47: the canvas is still a uniform white 200x200 fill here, so
+# every statistic is known. Reading the PDB status slot as 'mean' (the
+# off-by-one fixed in #48) gives mean=3 and shifts every other field.
+_h = _hist.get('results', {})
+_expected = {'mean': 255.0, 'std_dev': 0.0, 'median': 255.0, 'pixels': 40000.0, 'count': 40000.0}
+chk('histogram_values',
+    all(isinstance(_h.get(k), (int, float)) and abs(_h[k] - v) < 0.01 for k, v in _expected.items()),
+    _h)
+# A uniform fill has std_dev 0, the same as _safe()'s fallback, so also check
+# a non-uniform image: columns 0-49 black, the rest white (1 in 4 black).
+# mean = 0.75 * 255, std_dev = 255 * sqrt(0.25 * 0.75), median = 255.
+cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': 50, 'height': 200, 'color': '#000000'})
+_h = cmd('get_histogram', {'image_index': 0, 'channel': 'value'}).get('results', {})
+_expected = {'mean': 191.25, 'std_dev': 110.4182, 'median': 255.0, 'pixels': 40000.0, 'count': 40000.0}
+chk('histogram_values_mixed',
+    all(isinstance(_h.get(k), (int, float)) and abs(_h[k] - v) < 0.01 for k, v in _expected.items()),
+    _h)
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # restore the white canvas for later tests
 t('selection_bounds', cmd('get_selection_bounds', {'image_index': 0}))
 
 print()
@@ -130,7 +148,12 @@ print()
 print("=== Cat 6: Drawing ===")
 t('fill_layer',     cmd('fill_layer',     {'image_index': 0, 'color': '#ff0000'}))
 t('set_colors',     cmd('set_colors',     {'foreground': '#000000', 'background': '#ffffff'}))
+# fill_layer cleared the selection, so create one for fill_selection.
+t('select_for_fill', cmd('select_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20}))
 t('fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground'}))
+# Clear it again so the tools below draw on the whole layer instead of
+# being clipped to the 20x20 square.
+cmd('select_none', {'image_index': 0})
 t('draw_line',      cmd('draw_line',      {'image_index': 0, 'x1': 0, 'y1': 0, 'x2': 50, 'y2': 50, 'color': '#000000', 'width': 2}))
 t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#0000ff', 'line_width': 2.0}))
 t('draw_ellipse',   cmd('draw_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#00ff00', 'line_width': 2.0}))
@@ -144,6 +167,81 @@ t('add_text',   cmd('add_text',   {'image_index': 0, 'text': 'Hello', 'x': 10, '
 t('list_fonts', cmd('list_fonts', {}))
 
 print()
+print("=== Cat 7b: Paint tools ignore a leftover context ===")
+# context_push() copies the current context, so an opacity or paint mode left
+# by an earlier call_api used to blend into every fill and stroke. Leave
+# opacity at 50% and paint mode at DIFFERENCE (black on white would come out
+# white), then check each tool still paints solid black.
+_r = cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+if _r.get('status') != 'success':  # otherwise the checks below would paint over the previous image
+    print(f"Cat 7b canvas setup failed: {_r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
+_BLACK = [0, 0, 0]
+_WHITE = [255, 255, 255]
+
+
+def _read_context():
+    r = cmd('exec', {'args': ['python-fu-exec', [
+        'print(Gimp.context_get_opacity(), Gimp.context_get_paint_mode().value_nick)',
+    ]]})
+    try:
+        opacity, mode = r['results'][0].split()
+        return float(opacity), mode
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
+def _context(opacity, mode):
+    """Set opacity and paint mode (and a solid line), and confirm they took.
+
+    If the setup silently failed, every check below would run in a plain
+    context and pass without testing anything, so stop the suite instead.
+    """
+    r = cmd('exec', {'args': ['python-fu-exec', [
+        f'Gimp.context_set_opacity({opacity})',
+        f'Gimp.context_set_paint_mode(Gimp.LayerMode.{mode})',
+        'Gimp.context_set_line_dash_pattern([])',  # a leftover dash could leave a gap at a sampled stroke pixel
+    ]]})
+    got = _read_context()
+    if r.get('status') != 'success' or got != (opacity, mode.lower()):
+        print(f"Context setup failed: wanted {(opacity, mode.lower())}, got {got}: {r.get('error', '')}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def _paint_check(name, tool, params, x, y, layer_name=None, select=None):
+    _context(100.0, 'NORMAL')
+    cmd('select_none', {'image_index': 0})
+    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # so a black pixel can only come from the tool
+    q = {'image_index': 0, 'x': x, 'y': y}
+    _before = cmd('get_pixel_color', q).get('results', {}).get('color_rgb')
+    chk(name + '_starts_white', _before == _WHITE, _before)  # a failed reset could leave the last check's black
+    if select:
+        t(name + '_select', cmd('select_rectangle', dict(select, image_index=0)))
+    _context(50.0, 'DIFFERENCE')
+    t(name, cmd(tool, dict(params, image_index=0)))
+    _after = _read_context()
+    chk(name + '_restores_context', _after == (50.0, 'difference'), _after)
+    _context(100.0, 'NORMAL')
+    if layer_name:
+        q['layer_name'] = layer_name
+    p = cmd('get_pixel_color', q).get('results', {})
+    chk(name + '_solid', p.get('color_rgb') == _BLACK and p.get('alpha') == 255, p)
+
+
+_paint_check('ctx_fill_layer',     'fill_layer',     {'color': '#000000'}, 100, 100)
+_paint_check('ctx_fill_rectangle', 'fill_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
+_paint_check('ctx_fill_ellipse',   'fill_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
+_paint_check('ctx_fill_selection', 'fill_selection', {'fill_type': 'foreground', 'color': '#000000'}, 100, 100,
+             select={'x': 50, 'y': 50, 'width': 100, 'height': 100})
+cmd('select_none', {'image_index': 0})
+_paint_check('ctx_draw_line',     'draw_line',      {'x1': 10, 'y1': 100, 'x2': 190, 'y2': 100, 'color': '#000000', 'width': 6}, 100, 100)
+_paint_check('ctx_draw_rectangle', 'draw_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
+_paint_check('ctx_draw_ellipse',   'draw_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
+_paint_check('ctx_create_layer',   'create_layer',   {'name': 'CtxLayer', 'fill': '#000000'}, 100, 100, layer_name='CtxLayer')
+cmd('delete_layer', {'image_index': 0, 'layer_name': 'CtxLayer'})
+
+print()
 print("=== Cat 8: Filters ===")
 t('gaussian_blur', cmd('apply_gaussian_blur', {'image_index': 0, 'radius': 2.0}))
 t('pixelate',      cmd('apply_pixelate',      {'image_index': 0, 'block_size': 5}))
@@ -151,6 +249,90 @@ t('emboss',        cmd('apply_emboss',        {'image_index': 0}))
 t('vignette',      cmd('apply_vignette',      {'image_index': 0}))
 t('noise',         cmd('apply_noise',         {'image_index': 0}))
 t('drop_shadow',   cmd('apply_drop_shadow',   {'image_index': 0}))
+
+print()
+print("=== Cat 9: Filters change pixels ===")
+# The filter tools above only check status, and _apply_gegl_filter used to
+# report success without applying anything. Each check here starts from a
+# known image and asserts a change that only the filter itself can make.
+cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+
+
+def px(x, y):
+    return cmd('get_pixel_color', {'image_index': 0, 'x': x, 'y': y}).get('results', {}).get('color_rgb')
+
+
+def std_dev():
+    return cmd('get_histogram', {'image_index': 0, 'channel': 'value'}).get('results', {}).get('std_dev')
+
+
+def half_black():
+    """White canvas with columns 0-149 black."""
+    cmd('select_none', {'image_index': 0})
+    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+    cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': 150, 'height': 200, 'color': '#000000'})
+
+
+# Pixelate: the 100px block over columns 100-199 is half black, half white.
+half_black()
+t('f_pixelate', cmd('apply_pixelate', {'image_index': 0, 'block_size': 100}))
+_p = px(120, 50)
+chk('f_pixelate_blends', _p is not None and 0 < _p[0] < 255, _p)
+
+# Gaussian blur: 5px left of the black/white edge picks up some white.
+half_black()
+t('f_gaussian_blur', cmd('apply_gaussian_blur', {'image_index': 0, 'radius': 10.0}))
+_p = px(145, 50)
+chk('f_gaussian_blur_spreads', _p is not None and _p[0] > 0, _p)
+
+# Emboss: a flat white area is shaded to a gray, not left white.
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+t('f_emboss', cmd('apply_emboss', {'image_index': 0}))
+_p = px(100, 100)
+chk('f_emboss_shades', _p is not None and _p[0] < 255, _p)
+
+# Vignette: corners darken while the center stays white.
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+t('f_vignette', cmd('apply_vignette', {'image_index': 0}))
+_c, _m = px(0, 0), px(100, 100)
+chk('f_vignette_darkens_corner', _c is not None and _m is not None and _c[0] < _m[0], {'corner': _c, 'center': _m})
+
+# Noise, then denoise: a flat gray gains variation, then loses some of it.
+cmd('fill_layer', {'image_index': 0, 'color': '#808080'})
+t('f_noise', cmd('apply_noise', {'image_index': 0, 'amount': 0.5}))
+_noisy = std_dev()
+chk('f_noise_adds_variation', isinstance(_noisy, (int, float)) and _noisy > 1.0, _noisy)
+t('f_denoise', cmd('denoise', {'image_index': 0, 'strength': 100}))
+_clean = std_dev()
+chk('f_denoise_reduces_variation',
+    isinstance(_clean, (int, float)) and isinstance(_noisy, (int, float)) and _clean < _noisy,
+    {'before': _noisy, 'after': _clean})
+
+# Bad arguments must now fail instead of reporting success.
+_r = cmd('apply_vignette', {'image_index': 0, 'softness': 3.0})
+chk('f_vignette_rejects_out_of_range', _r.get('status') == 'error', _r.get('error'))
+_r = cmd('apply_vignette', {'image_index': 0, 'shape': 'hexagon'})
+chk('f_vignette_rejects_bad_shape', _r.get('status') == 'error', _r.get('error'))
+
+print()
+print("=== Cat 10: Fill safety ===")
+# With no selection, GIMP applies Edit > Clear / Fill to the ENTIRE layer.
+# fill_selection used to report success while destroying the image; it must
+# now refuse, leaving the layer untouched.
+cmd('new_canvas', {'width': 64, 'height': 64, 'fill': '#ff0000'})
+cmd('select_none', {'image_index': 0})
+_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+chk('fill_selection_refuses_no_selection', _r.get('status') == 'error', _r.get('error'))
+_r = cmd('fill_selection', {'image_index': 0, 'color': '#00ff00'})
+chk('fill_selection_refuses_no_selection_color', _r.get('status') == 'error', _r.get('error'))
+_p = cmd('get_pixel_color', {'image_index': 0, 'x': 32, 'y': 32}).get('results', {})
+chk('fill_selection_no_selection_layer_intact',
+    _p.get('color_rgb') == [255, 0, 0] and _p.get('alpha') == 255, _p)
+# The guard must not block a real selection.
+cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 10, 'height': 10})
+_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+chk('fill_selection_with_selection_succeeds', _r.get('status') == 'success', _r.get('error'))
+cmd('select_none', {'image_index': 0})
 
 print()
 print(f"=== TOTAL: {passed}/{passed+failed} PASSED ===")

@@ -73,68 +73,72 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ## Prerequisites
 
 - **GIMP 3.2+** — tested on GIMP 3.2.2 (Windows, macOS, Linux)
-- **Python 3.11+** — for the MCP server
-- **uv** — Python package manager (`pip install uv`)
+- **uv** — Python package manager ([install uv](https://docs.astral.sh/uv/getting-started/installation/)); `uvx` downloads the MCP server and a suitable Python (3.11+) on first use
 - **MCP-compatible AI client** — Claude Desktop, Claude Code, Gemini CLI, PydanticAI, etc.
 
 ---
 
 ## Quick Start
 
-### 1. Install Dependencies
+The MCP server and the GIMP plugin ship together as the [`gimp-mcp-plugin`](https://pypi.org/project/gimp-mcp-plugin/) package on PyPI. No clone needed.
+
+### 1. Install the GIMP Plugin
+
+Launch GIMP once (so its config folder exists), close it, then run:
 
 ```bash
-git clone https://github.com/gimp-mcp/gimp-mcp.git
-cd gimp-mcp
-uv sync
+uvx gimp-mcp-plugin@latest install-plugin
 ```
 
-### 2. Install the GIMP Plugin
+This copies the plugin into the newest GIMP 3.x config folder it finds (Linux standard, Snap and Flatpak locations, macOS, Windows) and makes it executable. Restart GIMP afterward.
 
-Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
+- `--dry-run` shows where it would install without writing anything.
+- `--gimp-dir DIR` installs into a specific GIMP config folder, e.g. `--gimp-dir ~/.config/GIMP/3.2`.
 
-> **Which directory?** GIMP names its per-user folder after its **major.minor** version
-> (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
-> *moves* when you upgrade GIMP (e.g. `3.0` → `3.2`). The snippet below auto-selects the
-> newest one, so it keeps working across upgrades. To check the path manually, open GIMP
-> and look at **Edit → Preferences → Folders → Plug-ins**.
->
-> Launch GIMP at least once before running this, so its config folder exists.
+If you have more than one GIMP 3 installation (e.g. a system GIMP and a Flatpak), the newest folder found may not be the one your GIMP uses. Check the folder shown in GIMP's **Edit → Preferences → Folders → Plug-ins** and pass the folder that contains `plug-ins` with `--gimp-dir`.
 
-**macOS / Linux:**
-```bash
-# Pick the base directory for your platform:
-BASE="$HOME/Library/Application Support/GIMP"     # macOS
-# BASE="$HOME/.config/GIMP"                        # Linux (standard)
-# BASE="$HOME/snap/gimp/current/.config/GIMP"      # Linux (Snap)
+> **Which folder does GIMP use?** GIMP names its per-user folder after its **major.minor**
+> version (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the
+> plug-ins folder *moves* when you upgrade GIMP. Re-run `install-plugin` after upgrading.
+> To check the active path, open **Edit → Preferences → Folders → Plug-ins** in GIMP.
 
-# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...):
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
-if [ -z "$GIMP_DIR" ]; then
-  echo "No GIMP 3.x config dir found under $BASE — launch GIMP once, then re-run." >&2
-  exit 1
-fi
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
-echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
-```
-
-**Windows:**
-```text
-%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
-```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
-
-> For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
-
-### 3. Start the MCP Server in GIMP
+### 2. Start the MCP Server in GIMP
 
 1. Open any image in GIMP
 2. Go to **Tools > MCP > Start MCP Server**
 3. Server starts on `localhost:9877`
 
-### 4. Configure Your MCP Client
+#### Start automatically when GIMP launches
+
+To skip step 2 on every launch, open **Tools > MCP > MCP Server Settings...**, tick
+**Start MCP server when GIMP launches**, and restart GIMP. Autostart is off by default.
+
+The same dialog sets the **port** (default `9877`). If you change it, set `GIMP_MCP_PORT`
+in your MCP client config so the MCP server connects to the same port:
+
+```json
+"gimp": {
+  "command": "uvx",
+  "args": ["gimp-mcp-plugin@latest"],
+  "env": { "GIMP_MCP_PORT": "9988" }
+}
+```
+
+Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
+`~/.config/GIMP/3.2/gimp-mcp.json`). Port changes apply the next time the server starts.
+
+#### Timeout for long commands
+
+The MCP server waits up to 300 seconds for GIMP to finish each command. For heavier work
+(large or 16-bit images, slow filters), set `GIMP_MCP_TIMEOUT` (in seconds) in your MCP
+client config, the same way as `GIMP_MCP_PORT` above, e.g. `"GIMP_MCP_TIMEOUT": "900"`.
+`check_server` reports the timeout in effect. When a command times out, GIMP may still be
+running it, so check the image before retrying. Your MCP client may have its own tool
+timeout (in Claude Code, `MCP_TOOL_TIMEOUT`, in milliseconds); raise it too if it's shorter.
+
+### 3. Configure Your MCP Client
+
+`gimp-mcp-plugin@latest` makes `uvx` check PyPI for a new release each time your client starts the server.
 
 #### Claude Desktop
 `~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -143,8 +147,8 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -152,13 +156,7 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 
 #### Claude Code
 ```bash
-cd /path/to/gimp-mcp
-claude  # .mcp.json is auto-detected
-```
-
-Or manually:
-```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
+claude mcp add gimp-mcp -- uvx gimp-mcp-plugin@latest
 ```
 
 #### Gemini CLI
@@ -167,8 +165,8 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -179,9 +177,45 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 
-server = MCPServerStdio('uv', args=['run', '--directory', '/path/to/gimp-mcp', 'gimp_mcp_server.py'])
+server = MCPServerStdio('uvx', args=['gimp-mcp-plugin@latest'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
+
+#### Cancelling long commands
+
+GIMP runs one command at a time, in the order they're sent. While it works, the MCP server
+stays responsive, so your client can cancel a call. The cancel returns at once: a command
+that's still waiting its turn never runs, but one GIMP has already started is finished in
+the background. Check the image before retrying a cancelled edit, or it may be applied twice.
+
+### Updating
+
+The plugin and the MCP server must be the same version. `check_server` and `get_gimp_info` report a mismatch and print the command that fixes it. To update both:
+
+1. Restart your MCP client. With `@latest`, it picks up the newest server.
+2. Run `uvx gimp-mcp-plugin@latest install-plugin` and restart GIMP.
+
+### Running from a Git Checkout (contributors)
+
+To work on the code, run the server and install the plugin from a clone instead:
+
+```bash
+git clone https://github.com/gimp-mcp/gimp-mcp.git
+cd gimp-mcp
+uv sync
+uv run gimp_mcp_server.py install-plugin    # installs this checkout's plugin
+```
+
+Then point your MCP client at the checkout, e.g. for Claude Desktop:
+
+```json
+"gimp": {
+  "command": "uv",
+  "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+}
+```
+
+Claude Code picks up the repo's `.mcp.json` automatically when started in the checkout. After `git pull`, re-run `install-plugin` if the plugin changed.
 
 ---
 
@@ -293,7 +327,8 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | Tool | Description |
 |---|---|
 | `open_image` | Open image file |
-| `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `open_image_as_layer` | Import an image file as a new layer in an open image |
+| `export_image` | Export to PNG, JPEG, WebP, TIFF, BMP |
 | `save_xcf` | Save as GIMP XCF (preserves layers and metadata) |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |
@@ -329,7 +364,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 ### 🔌 Connection & Raw API
 | Tool | Description |
 |---|---|
-| `check_server` | Check the GIMP plugin socket is reachable |
+| `check_server` | Check the GIMP plugin socket is reachable and that the plugin version matches the server |
 | `restart_server` | Drop and re-establish the connection to the plugin |
 | `call_api` | Run arbitrary Python-Fu code inside GIMP (escape hatch for anything not covered above) |
 
@@ -433,13 +468,18 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 
 ### "Could not connect to GIMP"
 - GIMP must be running with an image open
-- Start the MCP server: **Tools > MCP > Start MCP Server**
-- Check port 9877 is not blocked by firewall
+- Start the MCP server: **Tools > MCP > Start MCP Server**, or enable autostart in **Tools > MCP > MCP Server Settings...**
+- If you changed the port in GIMP, set `GIMP_MCP_PORT` to the same value in your MCP client config
+- Check port 9877 (or your custom port) is not blocked by firewall
+
+### "GIMP did not reply within 300 s"
+- The command took longer than the MCP server waits. Raise `GIMP_MCP_TIMEOUT` (seconds) in your MCP client config; see [Timeout for long commands](#timeout-for-long-commands)
+- GIMP may still be running the command: check the image before retrying
 
 ### Plugin Not Visible in GIMP
 - Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)
-- Confirm the plugin file is in the correct directory (see install steps above)
-- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; reinstall the plugin into the new version's `plug-ins` folder. Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
+- Confirm the plugin file is in the correct directory: `uvx gimp-mcp-plugin@latest install-plugin --dry-run` shows where it goes
+- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; re-run `uvx gimp-mcp-plugin@latest install-plugin` (use `--dry-run` to see which folder it picks). Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
 - On Linux/macOS: ensure the file has execute permission (`chmod +x`)
 - Restart GIMP after installation
 - Check **Filters > Script-Fu > Console** for error messages
@@ -450,11 +490,6 @@ Run the test suite and check the failure list:
 python run_tests.py
 ```
 Each failure includes the tool name and error — most issues on GIMP 3.2 are covered by the fixes above.
-
-### Debug Mode
-```bash
-GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
-```
 
 ---
 
