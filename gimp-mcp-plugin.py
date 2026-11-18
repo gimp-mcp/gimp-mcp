@@ -3587,6 +3587,12 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             fill_type   = (params.get("fill_type") or "foreground").lower()
+            if fill_type not in ("foreground", "background", "pattern", "transparent"):
+                return {
+                    "status": "error",
+                    "error": (f"Unknown fill_type {params.get('fill_type')!r}: use "
+                              "'foreground', 'background', 'pattern' or 'transparent'."),
+                }
             color_str   = params.get("color")
             image    = self._get_image(image_index)
             # With no active selection GIMP applies edit_clear()/edit_fill() to
