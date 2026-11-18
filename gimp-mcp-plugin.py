@@ -1379,7 +1379,7 @@ class MCPPlugin(Gimp.PlugIn):
                         "width": layer.get_width(),
                         "height": layer.get_height(),
                         "has_alpha": layer.has_alpha(),
-                        "is_group": hasattr(layer, 'get_children') and callable(getattr(layer, 'get_children')),
+                        "is_group": layer.is_group_layer(),
                         "layer_type": self._get_layer_type_string(layer)
                     }
                     # Try to get layer mode if available
@@ -1405,7 +1405,7 @@ class MCPPlugin(Gimp.PlugIn):
                         "name": channel.get_name(),
                         "visible": channel.get_visible(),
                         "opacity": channel.get_opacity(),
-                        "color": str(channel.get_color()) if hasattr(channel, 'get_color') else "unknown"
+                        "color": "#{:02x}{:02x}{:02x}".format(*srgb_bytes_from_color(channel.get_color())[:3]),
                     }
                     channels_info.append(channel_info)
                 except Exception as channel_error:
@@ -1453,7 +1453,11 @@ class MCPPlugin(Gimp.PlugIn):
             # Get resolution information
             resolution_x = resolution_y = None
             try:
-                resolution_x, resolution_y = image.get_resolution()
+                # get_resolution() returns (ok, x, y); unpacking it into two
+                # names raised, which left both values None.
+                ok, res_x, res_y = image.get_resolution()
+                if ok:
+                    resolution_x, resolution_y = res_x, res_y
             except Exception as res_error:
                 print(f"Error getting resolution: {res_error}")
             
@@ -1533,21 +1537,22 @@ class MCPPlugin(Gimp.PlugIn):
             return str(precision)
             
     def _get_layer_type_string(self, layer):
-        """Get layer type string with compatibility for different GIMP versions."""
+        """Return the layer's pixel type: RGB, RGBA, GRAY, GRAYA, INDEXED or INDEXEDA.
+
+        Gimp.Drawable.type() is a method; reading `layer.type` used to report
+        the bound method's repr instead.
+        """
         try:
-            # Try different methods to get layer type
-            if hasattr(layer, 'get_type'):
-                return str(layer.get_type())
-            elif hasattr(layer, 'get_image_type'):
-                return str(layer.get_image_type())
-            elif hasattr(layer, 'type'):
-                return str(layer.type)
-            else:
-                # Fallback - determine from layer properties
-                if layer.has_alpha():
-                    return "RGBA"
-                else:
-                    return "RGB"
+            names = {
+                Gimp.ImageType.RGB_IMAGE:      "RGB",
+                Gimp.ImageType.RGBA_IMAGE:     "RGBA",
+                Gimp.ImageType.GRAY_IMAGE:     "GRAY",
+                Gimp.ImageType.GRAYA_IMAGE:    "GRAYA",
+                Gimp.ImageType.INDEXED_IMAGE:  "INDEXED",
+                Gimp.ImageType.INDEXEDA_IMAGE: "INDEXEDA",
+            }
+            image_type = layer.type()
+            return names.get(image_type, str(image_type))
         except Exception as e:
             print(f"Warning: Could not determine layer type: {e}")
             return "unknown"
