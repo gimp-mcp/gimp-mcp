@@ -30,6 +30,8 @@ right command when the versions differ.
   and `resize_canvas`. `resize_canvas` used to flatten the image for it.
 
 ### Changed
+- `create_layer` and `set_layer_properties` reject unknown blend modes instead of
+  using Normal, and accept names like `hard light` and `hard-light` (#149).
 - Some color strings that used to paint now return an error. Use hex or
   `rgb(r, g, b)` instead:
   - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,
