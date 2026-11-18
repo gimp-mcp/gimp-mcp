@@ -2945,6 +2945,9 @@ class MCPPlugin(Gimp.PlugIn):
             new_h  = int(params.get("height"))
             anchor = params.get("anchor", "center").lower()
             fill   = params.get("fill", "transparent")
+            # Parse the fill color before changing anything, so a bad color
+            # can't leave the canvas resized but unfilled.
+            bg = None if fill.lower() == "transparent" else self._color(fill)
             image  = self._get_image(image_index)
             src_w  = image.get_width()
             src_h  = image.get_height()
@@ -2966,10 +2969,9 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 self._check_ok(image.resize(new_w, new_h, off_x, off_y), "Resizing the canvas")
-                if fill.lower() != "transparent":
+                if bg is not None:
                     Gimp.context_push()
                     try:
-                        bg = self._color(fill)
                         Gimp.context_set_background(bg)
                         self._check_item(image.flatten(), "Flattening the resized canvas")
                     finally:
@@ -3467,10 +3469,14 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             fg_str = params.get("foreground", None)
             bg_str = params.get("background", None)
-            if fg_str is not None:
-                Gimp.context_set_foreground(self._color(fg_str))
-            if bg_str is not None:
-                Gimp.context_set_background(self._color(bg_str))
+            # Parse both before setting either, so a bad background can't
+            # leave only the foreground changed.
+            fg = self._color(fg_str) if fg_str is not None else None
+            bg = self._color(bg_str) if bg_str is not None else None
+            if fg is not None:
+                Gimp.context_set_foreground(fg)
+            if bg is not None:
+                Gimp.context_set_background(bg)
             return {"status": "success", "results": {"foreground": fg_str, "background": bg_str}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -3897,6 +3903,9 @@ class MCPPlugin(Gimp.PlugIn):
                 new_font = None
             new_size    = params.get("size", None)
             new_color   = params.get("color", None)
+            # Parse the color before any edit, so a bad color can't leave the
+            # text, font or size changed.
+            color_obj = self._color(new_color) if new_color is not None else None
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
             # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
@@ -3930,11 +3939,11 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("font-size", float(new_size))
                     cfg.set_property("unit",      Gimp.Unit.pixel())
                     self._run_pdb(proc, cfg)
-                if new_color is not None:
+                if color_obj is not None:
                     proc = self._lookup_pdb("gimp-text-layer-set-color")
                     cfg = proc.create_config()
                     cfg.set_property("layer", layer)
-                    cfg.set_property("color", self._color(new_color))
+                    cfg.set_property("color", color_obj)
                     self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
@@ -4089,6 +4098,9 @@ class MCPPlugin(Gimp.PlugIn):
             blur_radius = float(params.get("blur_radius", 10))
             color_str   = params.get("color", "black")
             opacity     = float(params.get("opacity", 60))
+            # Parse the color before adding the shadow layer, so a bad color
+            # can't leave an unfilled shadow layer in the image.
+            shadow_color = self._color(color_str)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
@@ -4100,7 +4112,7 @@ class MCPPlugin(Gimp.PlugIn):
                 image.insert_layer(shadow_layer, None, src_pos + 1)
 
                 # 2. Fill shadow layer with shadow color, preserving alpha shape
-                Gimp.context_set_foreground(self._color(color_str))
+                Gimp.context_set_foreground(shadow_color)
                 shadow_layer.set_lock_alpha(True)
                 try:
                     self._check_ok(Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND),
@@ -4653,9 +4665,9 @@ class MCPPlugin(Gimp.PlugIn):
             if display is None:
                 return {"status": "error", "error": (
                     f"Image {image_id} has no window opened by the plugin (it was opened "
-                    "in GIMP directly, its window was closed, or GIMP runs without a "
-                    "display), so it can't be raised from here. Use GIMP's Windows menu "
-                    "to switch to it."
+                    "in GIMP directly or by call_api code, its window was closed, or GIMP "
+                    "runs without a display), so it can't be raised from here. Use GIMP's "
+                    "Windows menu to switch to it."
                 )}
             display.present()
             Gimp.displays_flush()
@@ -4757,8 +4769,8 @@ class MCPPlugin(Gimp.PlugIn):
             if image.is_valid():
                 return {"status": "error", "error": (
                     "Could not close image: it still has an open display not tracked "
-                    "by the plugin (e.g. opened in GIMP directly or before this "
-                    "session started). Close the window manually with Ctrl+W."
+                    "by the plugin (e.g. opened in GIMP directly, by call_api code, or "
+                    "before this session started). Close the window manually with Ctrl+W."
                 )}
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:

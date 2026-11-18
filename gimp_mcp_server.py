@@ -697,7 +697,7 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     Important Tips:
     - When filling layers with color, ensure layer has alpha channel using Gimp.Layer.add_alpha()
     - Use Gimp.Drawable.fill() for reliable full-layer fills
-    - Specify colors precisely with rgb(R, G, B) or rgba(R, G, B, A) to avoid transparency issues
+    - Build colors from hex, e.g. Gegl.Color.new("#ff8000"): Gegl reads rgb(...)/rgba(...) values as linear, so rgb(255, ...) clamps to white
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
 
@@ -2908,8 +2908,9 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
     """Raise a specific image's window to the front in GIMP.
 
     Only windows the plug-in opened (open_image, new_canvas) can be raised.
-    For an image opened in GIMP directly, or whose window was closed, this
-    fails with an error; other tools still work on it by image_index.
+    For an image whose window was opened in GIMP directly or by call_api code
+    (Gimp.Display.new), or was closed, this fails with an error; other tools
+    still work on it by image_index.
 
     Parameters:
     - image_index: Index of the image to activate (from list_images)
@@ -2939,8 +2940,9 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     - work on a copy (duplicate_layer) and delete it to revert, or
     - check with get_state_snapshot before a change that is hard to reverse.
 
-    A human can still press Ctrl+Z in GIMP; the plug-in wraps each operation
-    in an undo group, so one Ctrl+Z reverts one whole operation.
+    A human can still press Ctrl+Z in GIMP. Most drawing and editing tools
+    group their changes, so one Ctrl+Z reverts the whole operation; others
+    (e.g. selection tools, call_api code) may take several.
 
     Parameters:
     - steps: Ignored (kept for client compatibility)
@@ -3018,8 +3020,12 @@ def close_image(
     """Close an image, optionally saving as XCF first.
 
     Closes images whose window the plug-in opened (open_image, new_canvas) or
-    that have no window. An image with a window opened in GIMP directly can't
-    be closed from here: this fails with an error and the image stays open.
+    that have no window. An image whose window was opened in GIMP directly, or
+    by call_api code (Gimp.Display.new), can't be closed from here: this fails
+    with an error and the image stays open.
+
+    Unsaved changes are discarded without asking. Pass save_first=True to keep
+    them as XCF (export_image flattens by default, so it doesn't keep layers).
 
     Parameters:
     - image_index: Index of the image to close (default 0)

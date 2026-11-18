@@ -234,7 +234,7 @@ Check `get_context_state()` before operations that depend on settings:
 ### Layer Management
 - When filling layers with color, ensure the layer has an alpha channel using `Gimp.Layer.add_alpha()`
 - Use `Gimp.Drawable.fill()` for reliable full-layer fills
-- Specify colors precisely with `rgb(R, G, B)` or `rgba(R, G, B, A)` to avoid transparency issues
+- Build colors from hex, e.g. `Gegl.Color.new("#ff8000")`: Gegl reads `rgb(...)`/`rgba(...)` values as linear, so `rgb(255, ...)` clamps to white
 
 ### Context Efficiency
 - No need to repeat import commands - once imported, packages remain available

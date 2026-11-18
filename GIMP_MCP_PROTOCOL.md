@@ -206,7 +206,7 @@ Gimp.displays_flush()
 ### Important Tips
 - When filling layers with color, ensure layer has alpha channel using `Gimp.Layer.add_alpha()`
 - Use `Gimp.Drawable.fill()` for reliable full-layer fills
-- Specify colors precisely with rgb(R, G, B) or rgba(R, G, B, A) to avoid transparency issues
+- Build colors from hex, e.g. `Gegl.Color.new("#ff8000")`: Gegl reads `rgb(...)`/`rgba(...)` values as linear, so `rgb(255, ...)` clamps to white
 - After drawing operations, always call `Gimp.displays_flush()`
 - After selection operations for drawing, unselect with `Gimp.Selection.none(image)`
 - Use `from gi.repository import Gio` for file operations: `Gio.File.new_for_path(path)`
