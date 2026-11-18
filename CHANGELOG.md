@@ -13,6 +13,19 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- All 148 CSS color names paint the right color. Names other than the 16 basic HTML ones,
+  such as `orange`, `gold` or `cornflowerblue`, used to paint cyan (#44). Based on #54 by
+  @floraschouw.
+- A color the tools can't read returns an error naming it and leaves the image unchanged.
+  Unknown names, hex without `#` and other strings that are neither hex nor `rgb()` used to
+  paint cyan and report success, and values after an `rgba()` color's fourth were ignored
+  (#145).
+
+### Added
+- Percentages in `rgb()` / `rgba()` colors, such as `rgb(50%, 50%, 50%)`, and the
+  space-separated form `rgb(255 128 0 / 0.5)`.
+
 ## [0.5.0] - 2026-11-18
 
 ### Changed
