@@ -8,6 +8,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
     def setUp(self):
         install_gi_stub()
         module = load_plugin()
+        self.module = module
         self.plugin = module.MCPPlugin()
         self.calls = Mock()
         self.plugin._get_image = Mock(return_value=self.calls.image)
@@ -59,6 +60,58 @@ class LayerUndoGroupsTests(unittest.TestCase):
                 result = self.plugin._edit_text(options)
                 self.assertEqual(result, {"status": "success", "results": {"status": "success"}})
                 self.assertEqual(self.calls.mock_calls, [])
+
+    def test_edit_text_rejects_invalid_size_before_any_edit(self):
+        self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
+        self.plugin._run_pdb = self.calls.run_pdb
+        for size in ("abc", 0, -1, "nan", float("inf"), float("-inf")):
+            with self.subTest(size=size):
+                self.calls.reset_mock()
+                self.plugin._get_image.reset_mock()
+                self.plugin._resolve_layer.reset_mock()
+                self.plugin._lookup_pdb.reset_mock()
+
+                with patch.object(self.module.Gimp, "Unit", Mock(), create=True):
+                    result = self.plugin._edit_text({"text": "X", "size": size})
+
+                self.assertEqual(result["status"], "error")
+                if size == "abc":
+                    self.assertIn("could not convert string to float", result["error"])
+                else:
+                    self.assertIn("size must be a positive number", result["error"])
+                self.plugin._get_image.assert_not_called()
+                self.plugin._resolve_layer.assert_not_called()
+                self.plugin._lookup_pdb.assert_not_called()
+                self.assertEqual(self.calls.mock_calls, [])
+
+    def test_edit_text_keeps_positive_finite_sizes(self):
+        self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
+        self.plugin._run_pdb = self.calls.run_pdb
+        config = self.calls.procedure.create_config.return_value
+        unit = Mock()
+        with patch.object(self.module.Gimp, "Unit", unit, create=True):
+            for size in (0.5, 24, "36"):
+                with self.subTest(size=size):
+                    self.calls.reset_mock()
+                    self.plugin._lookup_pdb.reset_mock()
+
+                    result = self.plugin._edit_text({"size": size})
+
+                    self.assertEqual(result["status"], "success")
+                    self.plugin._lookup_pdb.assert_called_once_with("gimp-text-layer-set-font-size")
+                    self.assertEqual(
+                        self.calls.mock_calls,
+                        [
+                            call.image.undo_group_start(),
+                            call.procedure.create_config(),
+                            call.procedure.create_config().set_property("layer", self.calls.layer),
+                            call.procedure.create_config().set_property("font-size", float(size)),
+                            call.procedure.create_config().set_property("unit", unit.pixel()),
+                            call.run_pdb(self.calls.procedure, config),
+                            call.image.undo_group_end(),
+                            call.flush(),
+                        ],
+                    )
 
     def test_edit_text_keeps_empty_text_as_an_edit(self):
         self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
