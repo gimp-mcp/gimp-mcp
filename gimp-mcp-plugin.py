@@ -3018,6 +3018,13 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             autocrop    = bool(params.get("autocrop", False))
             image = self._get_image(image_index)
+            if not autocrop:
+                # Checked before the undo group, so a refused call leaves the
+                # image unchanged and not marked dirty.
+                _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
+                if not non_empty:
+                    raise ValueError("There is no selection to crop to. Make a selection "
+                                     "first, or pass autocrop=true.")
             image.undo_group_start()
             try:
                 if autocrop:
@@ -3026,13 +3033,15 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("image", image)
                     self._run_pdb(proc, cfg)
                 else:
-                    _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
-                    if non_empty:
-                        self._check_ok(image.crop(x2 - x1, y2 - y1, x1, y1), "Cropping the image")
+                    self._check_ok(image.crop(x2 - x1, y2 - y1, x1, y1), "Cropping the image")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            result = {"status": "success",
+                      "width": image.get_width(), "height": image.get_height()}
+            if not autocrop:
+                result.update(x=x1, y=y1)
+            return {"status": "success", "results": result}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 

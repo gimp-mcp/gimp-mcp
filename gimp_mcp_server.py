@@ -1376,11 +1376,15 @@ def crop_to_selection(
 ) -> dict:
     """Crop the image canvas to the current selection bounds.
 
+    The selection itself stays. With no selection (and autocrop off) this returns
+    an error and changes nothing.
+
     Parameters:
     - autocrop: If True, auto-detect crop bounds instead of using selection (default False)
     - image_index: Target image index (default 0)
 
-    Returns: {status, x, y, width, height} — crop region applied
+    Returns: {status, x, y, width, height}: the selection's bounds that the image
+    was cropped to. With autocrop, only {status, width, height}, the image's new size.
     """
     try:
         conn = get_gimp_connection()

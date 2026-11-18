@@ -71,6 +71,11 @@ right command when the versions differ.
   `GRAY`, ...), the image's `resolution_x`/`resolution_y`, and a channel's `color` as hex.
   `is_group` used to be true for every layer, `layer_type` and channel colors were Python
   object descriptions, and the resolution was null. Based on #63 by @yonggandewo12.
+- `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
+  the image unchanged. It used to report success, change nothing and mark the image as
+  changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs
+  said; with `autocrop`, the image's new `width` and `height`. Based on #63 by
+  @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
