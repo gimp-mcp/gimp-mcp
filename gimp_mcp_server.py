@@ -355,7 +355,7 @@ def new_canvas(
     - fill: Fill color for the background layer. Any CSS color name or
             hex string: "white" (default), "black", "transparent",
             "#FF5733", "rgb(100,200,50)", etc.
-    - resolution: DPI resolution (default: 72)
+    - resolution: DPI resolution, 1-1048576 (default: 72)
 
     Returns:
     - image_id: internal GIMP image ID
@@ -700,6 +700,9 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Build colors from hex, e.g. Gegl.Color.new("#ff8000"): Gegl reads rgb(...)/rgba(...) values as linear, so rgb(255, ...) clamps to white
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
+    - A GIMP call that fails doesn't raise or show a message in GIMP: it returns False or
+      None (Procedure.run() returns its status first). Check the result, and read GIMP's
+      reason with Gimp.get_pdb().get_last_error()
 
     GIMP 3.2 API Changes:
     - Use Gimp.get_images() instead of deprecated Gimp.list_images()
@@ -2141,7 +2144,7 @@ def draw_line(
     - x1, y1: Start point
     - x2, y2: End point
     - color: Stroke color (CSS / hex / rgb); uses current foreground if omitted
-    - width: Stroke width in pixels (default 2.0)
+    - width: Stroke width in pixels, 1-10000 (default 2.0)
     - tool: "pencil" (default, hard edge) or "paintbrush" (soft edge)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
@@ -2181,7 +2184,7 @@ def draw_rectangle(
     - x, y: Top-left corner
     - width, height: Rectangle dimensions
     - color: Stroke color; uses current foreground if omitted
-    - line_width: Stroke width in pixels (default 2.0)
+    - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2220,7 +2223,7 @@ def draw_ellipse(
     - x, y: Top-left corner of the bounding box
     - width, height: Bounding box dimensions
     - color: Stroke color; uses current foreground if omitted
-    - line_width: Stroke width in pixels (default 2.0)
+    - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 

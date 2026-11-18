@@ -14,6 +14,17 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- A tool call that GIMP refuses no longer also shows an error message in GIMP. The tool
+  already returns GIMP's reason; the message duplicated it, and calls that are expected
+  to fail popped up messages too. In `call_api` code, a failed GIMP call returns False
+  or None without a message: check the result, and `Gimp.get_pdb().get_last_error()`
+  for the reason. To get GIMP's messages back until GIMP restarts, run
+  `Gimp.get_plug_in().set_pdb_error_handler(Gimp.PDBErrorHandler.INTERNAL)` through
+  `call_api`.
+- `new_canvas` rejects a `resolution` outside 1-1048576, `draw_line` a `width` outside
+  1-10000, and `draw_rectangle`/`draw_ellipse` a `line_width` outside 0-2000 (0 excluded).
+  GIMP refused these values, but the tools went on: the canvas got the default resolution
+  while the requested one was reported, and the stroke used whatever width was set before.
 - `edit_text` and `set_layer_properties` skip opening an undo group when no edits
   are requested. Invalid opacity and font size are rejected before opening an
   undo group, including font sizes above GIMP's 8192 limit (#148).
