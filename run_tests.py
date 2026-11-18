@@ -505,15 +505,21 @@ try:
             == ['photo_web.jpg', 'photo_web.png'], _res)
         chk('web_source_untouched', _src_bytes is not None and read_bytes(_src) == _src_bytes)
         # Through a symlinked folder the paths differ, but it's the same file.
+        # Windows allows symlinks only with Developer Mode or admin rights.
         _link = os.path.join(_home_tmp, os.path.basename(_out) + '_link')
-        os.symlink(_out, _link)
         try:
-            _res = cmd('export_web_optimized', {'image_index': _idx, 'output_dir': _link}).get('results', {})
-            chk('web_symlink_named_after_source',
-                os.path.basename(_res.get('png_path', '')) == 'photo_web.png', _res)
-            chk('web_symlink_source_untouched', _src_bytes is not None and read_bytes(_src) == _src_bytes)
-        finally:
-            os.remove(_link)
+            os.symlink(_out, _link, target_is_directory=True)
+        except OSError as e:
+            print(f"  SKIP web_symlink: cannot create a symlink ({e})")
+            _link = None
+        if _link is not None:
+            try:
+                _res = cmd('export_web_optimized', {'image_index': _idx, 'output_dir': _link}).get('results', {})
+                chk('web_symlink_named_after_source',
+                    os.path.basename(_res.get('png_path', '')) == 'photo_web.png', _res)
+                chk('web_symlink_source_untouched', _src_bytes is not None and read_bytes(_src) == _src_bytes)
+            finally:
+                os.remove(_link)
         cmd('close_image', {'image_index': _idx})
     # An image without a file is named after its index.
     canvas(64, 64, '#3366cc')
