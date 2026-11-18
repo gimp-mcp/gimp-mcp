@@ -7,7 +7,8 @@ which doesn't exist (the value is NONE). Checks that:
 - converting to the mode the image already has succeeds and changes nothing
   (GIMP's convert call returns False then, which used to be ignored for RGB and
   GRAY and would now be an error);
-- RGBA and GRAYA convert and add alpha to every layer;
+- RGBA and GRAYA convert and add alpha to every layer, including layers inside
+  a group;
 - an out-of-range num_colors, an unknown mode, and an image with a layer group
   (which GIMP's PDB refuses to index) return an error and leave the image as it was.
 
@@ -131,6 +132,18 @@ def main():
             check(py("print(all(l.has_alpha() for l in _ccm_img.get_layers()))") == "True",
                   f"{mode} did not add alpha")
         print("PASS: GRAYA and RGBA convert and add alpha")
+
+        # A layer without alpha inside a group gets alpha too, also when the image
+        # is already RGB and every top-level layer has alpha.
+        py("_g = Gimp.GroupLayer.new(_ccm_img, 'grp')", "_ccm_img.insert_layer(_g, None, 0)",
+           "_c = Gimp.Layer.new(_ccm_img, 'child', 10, 10, Gimp.ImageType.RGB_IMAGE,"
+           " 100, Gimp.LayerMode.NORMAL)",
+           "_ccm_img.insert_layer(_c, _g, 0)")
+        check(py("print(_c.has_alpha())") == "False", "setup: the child already has alpha")
+        r = convert('RGBA')
+        check(r.get('status') == 'success', "RGBA with a group failed", r)
+        check(py("print(_c.has_alpha())") == "True", "RGBA skipped a layer inside a group")
+        print("PASS: RGBA adds alpha to a layer inside a group")
         return 0
     finally:
         if made_image:

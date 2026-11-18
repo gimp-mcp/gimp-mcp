@@ -5178,7 +5178,8 @@ class MCPPlugin(Gimp.PlugIn):
             # GIMP refuses (returns False) to convert an image to the mode it
             # already has; that's a no-op here, not an error.
             convert = image.get_base_type() != target
-            no_alpha = [layer for layer in image.get_layers()
+            # Including the layers inside groups (a group itself always has alpha).
+            no_alpha = [layer for layer in self._walk_layers(image.get_layers())
                         if mode in ("RGBA", "GRAYA") and not layer.has_alpha()]
             if convert and mode == "INDEXED" and any(
                     layer.is_group_layer() for layer in image.get_layers()):
