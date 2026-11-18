@@ -87,7 +87,8 @@ The main interface is the `call_api` tool with parameters:
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
 - Colors: the MCP tools' color arguments (`fill`, `color`, `foreground`, ...) accept
   hex (`"#rgb"`, `"#rgba"`, `"#rrggbb"`, `"#rrggbbaa"`), CSS `"rgb(r,g,b)"`/`"rgba(r,g,b,a)"`
-  (or `"rgb(r g b / a)"`), any of the 148 CSS color names (`orange`, `cornflowerblue`, ...), or `transparent`.
+  (or `"rgb(r g b / a)"`), any of the 148 CSS color names (`orange`, `cornflowerblue`, ...), or `transparent`
+  (or `none`).
   `rgb()` and `rgba()` both take 3 values or 4 (the 4th is alpha). RGB values are sRGB
   and read as 0-255 when any of them is above 1, else as 0-1;
   percentages (`rgb(50%,50%,50%)`) work too, for all three values or none. Alpha is read

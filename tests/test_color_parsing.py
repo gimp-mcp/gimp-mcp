@@ -67,6 +67,10 @@ def main():
     expect("  Gold ", "#ffd700")
     expect("transparent", "#00000000")
     expect("Transparent", "#00000000")
+    expect("None", "#00000000")  # Gegl reads "none" as transparent, so 0.5.0 did too
+    for spec, want in [("transparent", True), (" None ", True), ("NONE", True),
+                       ("#00000000", False), ("white", False), (None, False), ([], False)]:
+        check(f"is_transparent({spec!r}) is {want}", plugin.is_transparent(spec) is want)
     for name, value in plugin.CSS_COLORS.items():
         if to_hex(name) != value:
             check(f"name {name}", False, to_hex(name))
@@ -86,6 +90,8 @@ def main():
     expect("rgba(255,0,0,128)", "#ff000080")
     expect("rgb(255 128 0)", "#ff8000")
     expect("rgb(255 128 0 / 0.5)", "#ff800080")
+    expect("rgb (255,0,0)", "#ff0000")  # 0.5.0 accepted a space before the paren
+    expect("RGBA ( 255, 0, 0, 0.5 )", "#ff000080")
 
     # Percentages.
     expect("rgb(50%,50%,50%)", "#808080")
@@ -119,6 +125,8 @@ def main():
     expect("rgb(1e308%, 0%, 0%)", "#ff0000")
     expect("rgba(0,0,0,1e308%)", "#000000ff")
     expect_error("rgb(255,0,0", "Unknown color")
+    expect_error("rgb(1,2,3) junk", "Unknown color")
+    expect_error("rgbx(1,2,3)", "Unknown color")
     expect_error("hsl(0,100%,50%)", "Unknown color")
     expect_error([1, 2], "got 2")
     expect_error(None, "expected a string")
@@ -159,9 +167,9 @@ def main():
     for tool, params in [
         ("_fill_selection", {"color": "nope", "fill_type": "foreground"}),
         ("_draw_line", {"color": "nope", "x2": 5, "y2": 5}),
-        ("_draw_line", {"color": "", "x2": 5, "y2": 5}),
-        ("_draw_rectangle", {"color": "", **rect}),
-        ("_draw_ellipse", {"color": "", **rect}),
+        ("_draw_rectangle", {"color": "nope", **rect}),
+        ("_draw_ellipse", {"color": "nope", **rect}),
+        ("_draw_line", {"color": [], "x2": 5, "y2": 5}),  # only None and "" mean "no color"
         ("_gradient_fill", {"color1": "nope", "color2": "white"}),
         ("_gradient_fill", {"color1": "orange", "color2": "nope"}),
         ("_add_text", {"text": "hi", "color": "nope"}),
@@ -170,9 +178,51 @@ def main():
         r = getattr(p, tool)({"image_index": 0, **params})
         colors = {k: v for k, v in params.items() if k.startswith("color")}
         name = f"{tool} {colors}"
+        error = r.get("error", "")
         check(f"{name} rejected",
-              r.get("status") == "error" and "Unknown color" in r.get("error", ""), r)
+              r.get("status") == "error" and ("Unknown color" in error or "Invalid color" in error), r)
         check(f"{name} opened no undo group", not started, len(started))
+
+    # No color ("" or None, which the MCP server sends for an omitted color)
+    # means "use the current foreground": the tool doesn't parse one. Fill
+    # types that don't use the color ignore even a bad one.
+    parsed = []
+    real_color = p._color
+    p._color = lambda spec: parsed.append(spec) or real_color(spec)
+    for tool, params in [
+        ("_draw_line", {"color": None, "x2": 5, "y2": 5}),
+        ("_draw_line", {"color": "", "x2": 5, "y2": 5}),
+        ("_draw_rectangle", {"color": "", **rect}),
+        ("_draw_ellipse", {"color": None, **rect}),
+        ("_fill_selection", {"color": None, "fill_type": None}),
+        ("_fill_selection", {"color": "", "fill_type": "foreground"}),
+        ("_fill_selection", {"color": "nope", "fill_type": "background"}),
+        ("_fill_selection", {"color": "nope", "fill_type": "transparent"}),
+        ("_fill_selection", {}),  # no color key at all (a raw socket call)
+    ]:
+        parsed.clear()
+        r = getattr(p, tool)({"image_index": 0, **params})
+        name = f"{tool} {params}"
+        check(f"{name} parses no color", not parsed, parsed)
+        check(f"{name} reports no color error",
+              "color" not in r.get("error", "").lower(), r.get("error"))
+        if tool == "_fill_selection":  # the stub supports a whole fill_selection call
+            check(f"{name} succeeds", r.get("status") == "success", r)
+    p._color = real_color
+
+    # resize_canvas: fill="none" is transparent, so it must not flatten the
+    # image (a fill color flattens it onto that color).
+    flattened = []
+    img.resize = lambda *args: True
+    img.flatten = lambda: flattened.append(True) or img._layer
+    sys.modules["gi.repository"].Gimp.context_set_background = staticmethod(lambda color: None)
+    for fill, should_flatten in [("none", False), ("NONE", False), ("transparent", False),
+                                 ("white", True)]:
+        flattened.clear()
+        r = p._resize_canvas({"image_index": 0, "width": 50, "height": 50, "fill": fill})
+        check(f"resize_canvas fill={fill!r} succeeds", r.get("status") == "success", r)
+        check(f"resize_canvas fill={fill!r} {'flattens' if should_flatten else 'does not flatten'}",
+              bool(flattened) == should_flatten, len(flattened))
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll color parsing tests passed")
     return 1 if failures else 0

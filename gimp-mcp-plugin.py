@@ -275,12 +275,21 @@ def _split_rgb(inside, spec):
     return parts
 
 
+def is_transparent(spec):
+    """True for "transparent" or "none" (Gegl reads "none" as transparent too).
+
+    Tools that fill with a color check this first, so these get a real
+    transparent fill instead of a fill with a fully transparent color.
+    """
+    return isinstance(spec, str) and spec.strip().lower() in ("transparent", "none")
+
+
 def color_to_hex(spec):
     """Turn a color spec into "#rrggbb" or "#rrggbbaa" for Gegl.Color.new().
 
     Accepts hex ("#rgb", "#rgba", "#rrggbb", "#rrggbbaa"), "rgb(r,g,b)" and
     "rgba(r,g,b,a)" (see _components_to_hex for the scales; "rgb(r g b / a)"
-    works too), any CSS color name, "transparent", or an
+    works too), any CSS color name, "transparent" or "none", or an
     [r, g, b(, a)] list or tuple. Hex is the only form Gegl reads as sRGB:
     it reads rgb() strings as linear values.
 
@@ -300,11 +309,12 @@ def color_to_hex(spec):
         if len(digits) in (3, 4):
             digits = "".join(ch * 2 for ch in digits)
         return "#" + digits
-    if text.startswith(("rgb(", "rgba(")) and text.endswith(")"):
-        return _components_to_hex(_split_rgb(text[text.index("(") + 1:-1], spec), spec)
+    name, paren, rest = text.partition("(")
+    if paren and name.rstrip() in ("rgb", "rgba") and rest.endswith(")"):
+        return _components_to_hex(_split_rgb(rest[:-1], spec), spec)
     if text in CSS_COLORS:
         return CSS_COLORS[text]
-    if text == "transparent":
+    if is_transparent(text):
         return "#00000000"
 
     hint = f" Did you mean '#{text}'?" if len(text) in (3, 4, 6, 8) and _is_hex(text) else ""
@@ -2010,7 +2020,7 @@ class MCPPlugin(Gimp.PlugIn):
             # Drawable.fill ignores the context's opacity and paint mode, which
             # an earlier call may have changed; edit_fill would blend with them.
             try:
-                if fill.lower() == "transparent":
+                if is_transparent(fill):
                     layer.add_alpha()
                     self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new canvas")
                 else:
@@ -3066,7 +3076,7 @@ class MCPPlugin(Gimp.PlugIn):
             fill   = params.get("fill", "transparent")
             # Parse the fill color before changing anything, so a bad color
             # can't leave the canvas resized but unfilled.
-            bg = None if fill.lower() == "transparent" else self._color(fill)
+            bg = None if is_transparent(fill) else self._color(fill)
             image  = self._get_image(image_index)
             src_w  = image.get_width()
             src_h  = image.get_height()
@@ -3305,7 +3315,7 @@ class MCPPlugin(Gimp.PlugIn):
             # paint mode.
             layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
             try:
-                if fill.lower() == "transparent":
+                if is_transparent(fill):
                     self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new layer")
                 else:
                     bg = self._color(fill)
@@ -3543,7 +3553,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             fill_type   = (params.get("fill_type") or "foreground").lower()
-            color_str   = params.get("color", "white")
+            color_str   = params.get("color")
             image    = self._get_image(image_index)
             # With no active selection GIMP applies edit_clear()/edit_fill() to
             # the ENTIRE layer. That silently destroys image content, so refuse
@@ -3559,8 +3569,10 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color before the undo group opens: starting a group
             # clears GIMP's redo history, even if nothing is painted.
+            # With no color ("" or None: the MCP server sends None when it's
+            # omitted), fill with the current foreground color.
             fg = None
-            if fill_type not in ("transparent", "background", "pattern"):
+            if fill_type not in ("transparent", "background", "pattern") and color_str not in (None, ""):
                 fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
@@ -3578,7 +3590,8 @@ class MCPPlugin(Gimp.PlugIn):
                                    "Filling the selection")
                 else:
                     # foreground (default) or explicit color
-                    Gimp.context_set_foreground(fg)
+                    if fg is not None:
+                        Gimp.context_set_foreground(fg)
                     self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                    "Filling the selection")
             finally:
@@ -3622,7 +3635,8 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color before the undo group opens: starting a group
             # clears GIMP's redo history, even if nothing is painted.
-            fg = self._color(color_str) if color_str is not None else None
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3657,7 +3671,8 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str is not None else None
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3696,7 +3711,8 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str is not None else None
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
