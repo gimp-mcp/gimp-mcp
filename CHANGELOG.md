@@ -14,6 +14,9 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- `edit_text` and `set_layer_properties` skip opening an undo group when no edits
+  are requested. Invalid opacity and font size are rejected before opening an
+  undo group, including font sizes above GIMP's 8192 limit (#148).
 - All 148 CSS color names paint the right color. Names other than the 16 basic HTML ones,
   such as `orange`, `gold` or `cornflowerblue`, used to paint cyan (#44). Based on #54 by
   @floraschouw.
