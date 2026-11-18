@@ -705,7 +705,9 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Use Gimp.get_images() instead of deprecated Gimp.list_images()
     - Use image.get_layers() instead of Gimp.get_active_layer()
     - gimpfu module not available in GIMP 3.2
-    - Colors created with Gegl.Color.new('color_name')
+    - Colors: Gegl.Color.new("#ff8000"). Besides hex, Gegl.Color.new() knows only the 16 basic
+      HTML color names (red, navy, ...) and "transparent"/"none"; it turns any other name,
+      such as "orange", into cyan without an error, so use hex
     - Full API documentation: https://developer.gimp.org/api/3.0/libgimp/
 
     Parameters:
@@ -2064,8 +2066,11 @@ def fill_selection(
     whole layer.
 
     Parameters:
-    - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
-    - fill_type: Fill type override: "foreground", "background", or "transparent"
+    - color: Fill color as CSS name, hex, or rgb() string. Used unless fill_type is
+             "background", "pattern" or "transparent"; omit it to fill with the
+             current foreground color
+    - fill_type: "foreground" (default), "background", "pattern", or "transparent"
+                 (clears the selected pixels)
     - image_index: Target image index (default 0)
     - layer_name: Target layer; defaults to active layer
 

@@ -224,7 +224,9 @@ Gimp.displays_flush()
 - Image objects: `<Gimp.Image object at 0x... (GimpImage at 0x...)>`
 - Layer objects: `<Gimp.Layer object at 0x... (GimpLayer at 0x...)>`
 - The API has significantly changed from GIMP 2.x to 3.0
-- Colors are created with `Gegl.Color.new('color_name')`
+- Colors are created with `Gegl.Color.new("#ff8000")`. Use hex: besides hex, `Gegl.Color.new()`
+  knows only the 16 basic HTML color names and `transparent`/`none`, turns any other name
+  (such as `orange`) into cyan without an error, and reads `rgb(...)` strings as linear values
 - File objects use Gio library: `from gi.repository import Gio`
 
 ### Tested Working Examples

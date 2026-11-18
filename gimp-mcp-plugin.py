@@ -23,6 +23,7 @@ import time
 import base64
 import tempfile
 import os
+import math
 import platform
 import signal
 
@@ -155,6 +156,174 @@ def exec_and_get_results(command, context):
     sys.stdout = original_stdout
     output = buffer.getvalue()
     return output
+
+
+# CSS Color Module Level 4 color names (all 148), from Pillow's
+# ImageColor.colormap. Gegl.Color.new() knows only a few basic names; for any
+# other string it returns cyan (0, 1, 1, 0.67) instead of failing (#44), so
+# every color is turned into hex before Gegl sees it. Table from #54 by
+# @floraschouw.
+CSS_COLORS = {
+    "aliceblue": "#f0f8ff", "antiquewhite": "#faebd7", "aqua": "#00ffff", "aquamarine": "#7fffd4",
+    "azure": "#f0ffff", "beige": "#f5f5dc", "bisque": "#ffe4c4", "black": "#000000",
+    "blanchedalmond": "#ffebcd", "blue": "#0000ff", "blueviolet": "#8a2be2", "brown": "#a52a2a",
+    "burlywood": "#deb887", "cadetblue": "#5f9ea0", "chartreuse": "#7fff00", "chocolate": "#d2691e",
+    "coral": "#ff7f50", "cornflowerblue": "#6495ed", "cornsilk": "#fff8dc", "crimson": "#dc143c",
+    "cyan": "#00ffff", "darkblue": "#00008b", "darkcyan": "#008b8b", "darkgoldenrod": "#b8860b",
+    "darkgray": "#a9a9a9", "darkgreen": "#006400", "darkgrey": "#a9a9a9", "darkkhaki": "#bdb76b",
+    "darkmagenta": "#8b008b", "darkolivegreen": "#556b2f", "darkorange": "#ff8c00", "darkorchid": "#9932cc",
+    "darkred": "#8b0000", "darksalmon": "#e9967a", "darkseagreen": "#8fbc8f", "darkslateblue": "#483d8b",
+    "darkslategray": "#2f4f4f", "darkslategrey": "#2f4f4f", "darkturquoise": "#00ced1", "darkviolet": "#9400d3",
+    "deeppink": "#ff1493", "deepskyblue": "#00bfff", "dimgray": "#696969", "dimgrey": "#696969",
+    "dodgerblue": "#1e90ff", "firebrick": "#b22222", "floralwhite": "#fffaf0", "forestgreen": "#228b22",
+    "fuchsia": "#ff00ff", "gainsboro": "#dcdcdc", "ghostwhite": "#f8f8ff", "gold": "#ffd700",
+    "goldenrod": "#daa520", "gray": "#808080", "green": "#008000", "greenyellow": "#adff2f",
+    "grey": "#808080", "honeydew": "#f0fff0", "hotpink": "#ff69b4", "indianred": "#cd5c5c",
+    "indigo": "#4b0082", "ivory": "#fffff0", "khaki": "#f0e68c", "lavender": "#e6e6fa",
+    "lavenderblush": "#fff0f5", "lawngreen": "#7cfc00", "lemonchiffon": "#fffacd", "lightblue": "#add8e6",
+    "lightcoral": "#f08080", "lightcyan": "#e0ffff", "lightgoldenrodyellow": "#fafad2", "lightgray": "#d3d3d3",
+    "lightgreen": "#90ee90", "lightgrey": "#d3d3d3", "lightpink": "#ffb6c1", "lightsalmon": "#ffa07a",
+    "lightseagreen": "#20b2aa", "lightskyblue": "#87cefa", "lightslategray": "#778899", "lightslategrey": "#778899",
+    "lightsteelblue": "#b0c4de", "lightyellow": "#ffffe0", "lime": "#00ff00", "limegreen": "#32cd32",
+    "linen": "#faf0e6", "magenta": "#ff00ff", "maroon": "#800000", "mediumaquamarine": "#66cdaa",
+    "mediumblue": "#0000cd", "mediumorchid": "#ba55d3", "mediumpurple": "#9370db", "mediumseagreen": "#3cb371",
+    "mediumslateblue": "#7b68ee", "mediumspringgreen": "#00fa9a", "mediumturquoise": "#48d1cc", "mediumvioletred": "#c71585",
+    "midnightblue": "#191970", "mintcream": "#f5fffa", "mistyrose": "#ffe4e1", "moccasin": "#ffe4b5",
+    "navajowhite": "#ffdead", "navy": "#000080", "oldlace": "#fdf5e6", "olive": "#808000",
+    "olivedrab": "#6b8e23", "orange": "#ffa500", "orangered": "#ff4500", "orchid": "#da70d6",
+    "palegoldenrod": "#eee8aa", "palegreen": "#98fb98", "paleturquoise": "#afeeee", "palevioletred": "#db7093",
+    "papayawhip": "#ffefd5", "peachpuff": "#ffdab9", "peru": "#cd853f", "pink": "#ffc0cb",
+    "plum": "#dda0dd", "powderblue": "#b0e0e6", "purple": "#800080", "rebeccapurple": "#663399",
+    "red": "#ff0000", "rosybrown": "#bc8f8f", "royalblue": "#4169e1", "saddlebrown": "#8b4513",
+    "salmon": "#fa8072", "sandybrown": "#f4a460", "seagreen": "#2e8b57", "seashell": "#fff5ee",
+    "sienna": "#a0522d", "silver": "#c0c0c0", "skyblue": "#87ceeb", "slateblue": "#6a5acd",
+    "slategray": "#708090", "slategrey": "#708090", "snow": "#fffafa", "springgreen": "#00ff7f",
+    "steelblue": "#4682b4", "tan": "#d2b48c", "teal": "#008080", "thistle": "#d8bfd8",
+    "tomato": "#ff6347", "turquoise": "#40e0d0", "violet": "#ee82ee", "wheat": "#f5deb3",
+    "white": "#ffffff", "whitesmoke": "#f5f5f5", "yellow": "#ffff00", "yellowgreen": "#9acd32",
+}
+
+_HEX_DIGITS = set("0123456789abcdef")
+
+
+def _is_hex(text):
+    return bool(text) and set(text) <= _HEX_DIGITS
+
+
+def _components_to_hex(parts, spec):
+    """rgb()/rgba() values, or an [r, g, b(, a)] list, as "#rrggbb(aa)".
+
+    RGB values are read as 0-255 when any of them is above 1, else as 0-1.
+    Percentages ("50%") must be used for all three RGB values or none. Alpha
+    is read as 0-1 when it is at most 1, else as 0-255; "50%" also works.
+    """
+    if len(parts) not in (3, 4):
+        raise ValueError(f"Invalid color {spec!r}: rgb() and rgba() take 3 or 4 values, "
+                         f"got {len(parts)}")
+
+    def number(part):
+        text = str(part).strip()
+        percent = text.endswith("%")
+        if percent:
+            text = text[:-1]
+        try:
+            value = float(text)
+        except ValueError:
+            raise ValueError(f"Invalid color {spec!r}: {str(part).strip()!r} is not a number") from None
+        if not math.isfinite(value):
+            raise ValueError(f"Invalid color {spec!r}: {str(part).strip()!r} is not a number")
+        return value, percent
+
+    rgb = [number(p) for p in parts[:3]]
+    percents = {percent for _, percent in rgb}
+    if percents == {True, False}:
+        raise ValueError(f"Invalid color {spec!r}: use percentages for all of r, g and b, "
+                         f"or for none of them")
+    if True in percents:
+        values = [max(0.0, min(100.0, v)) * 255.0 / 100.0 for v, _ in rgb]
+    else:
+        values = [v for v, _ in rgb]
+        if not any(v > 1.0 for v in values):
+            values = [v * 255.0 for v in values]
+    out = "#" + "".join(f"{max(0, min(255, round(v))):02x}" for v in values)
+
+    if len(parts) == 4:
+        alpha, percent = number(parts[3])
+        if percent:
+            alpha = max(0.0, min(100.0, alpha)) * 255.0 / 100.0
+        elif alpha <= 1.0:
+            alpha = alpha * 255.0
+        out += f"{max(0, min(255, round(alpha))):02x}"
+    return out
+
+
+def _split_rgb(inside, spec):
+    """The values inside rgb(...): "r, g, b[, a]", "r g b[ / a]" or "r g b a"."""
+    if "," in inside:
+        parts = [p.strip() for p in inside.split(",")]
+        if any(not p for p in parts):
+            raise ValueError(f"Invalid color {spec!r}: a value is empty (check for a doubled "
+                             f"or trailing comma)")
+        if any("/" in p or any(ch.isspace() for ch in p) for p in parts):
+            raise ValueError(f"Invalid color {spec!r}: separate the values with commas only, "
+                             f"as in rgb(255, 128, 0)")
+        return parts
+    rgb, slash, alpha = inside.partition("/")
+    parts = rgb.split()
+    if slash:
+        if len(parts) != 3 or len(alpha.split()) != 1:
+            raise ValueError(f"Invalid color {spec!r}: put one alpha value after the '/', "
+                             f"as in rgb(255 128 0 / 0.5)")
+        parts.append(alpha.strip())
+    return parts
+
+
+def is_transparent(spec):
+    """True for "transparent" or "none" (Gegl reads "none" as transparent too).
+
+    Tools that fill with a color check this first, so these get a real
+    transparent fill instead of a fill with a fully transparent color.
+    """
+    return isinstance(spec, str) and spec.strip().lower() in ("transparent", "none")
+
+
+def color_to_hex(spec):
+    """Turn a color spec into "#rrggbb" or "#rrggbbaa" for Gegl.Color.new().
+
+    Accepts hex ("#rgb", "#rgba", "#rrggbb", "#rrggbbaa"), "rgb(r,g,b)" and
+    "rgba(r,g,b,a)" (see _components_to_hex for the scales; "rgb(r g b / a)"
+    works too), any CSS color name, "transparent" or "none", or an
+    [r, g, b(, a)] list or tuple. Hex is the only form Gegl reads as sRGB:
+    it reads rgb() strings as linear values.
+
+    Raises ValueError for anything else (TypeError for a value that is not a
+    string, list or tuple), so an unknown color is reported instead of
+    painted as cyan.
+    """
+    if isinstance(spec, (list, tuple)):
+        return _components_to_hex(list(spec), spec)
+    if not isinstance(spec, str):
+        raise TypeError(f"Invalid color {spec!r}: expected a string such as '#ff8000'")
+
+    text = spec.strip().lower()
+    if text.startswith("#"):
+        digits = text[1:]
+        if len(digits) not in (3, 4, 6, 8) or not _is_hex(digits):
+            raise ValueError(f"Invalid hex color {spec!r}: use #rgb, #rgba, #rrggbb or #rrggbbaa")
+        if len(digits) in (3, 4):
+            digits = "".join(ch * 2 for ch in digits)
+        return "#" + digits
+    name, paren, rest = text.partition("(")
+    if paren and name.rstrip() in ("rgb", "rgba") and rest.endswith(")"):
+        return _components_to_hex(_split_rgb(rest[:-1], spec), spec)
+    if text in CSS_COLORS:
+        return CSS_COLORS[text]
+    if is_transparent(text):
+        return "#00000000"
+
+    hint = f" Did you mean '#{text}'?" if len(text) in (3, 4, 6, 8) and _is_hex(text) else ""
+    raise ValueError(f"Unknown color {spec!r}: use hex ('#ff8000'), rgb()/rgba(), "
+                     f"'transparent', or a CSS color name such as 'orange'.{hint}")
 
 
 # Gegl stores colour in linear light, so Gegl.Color.get_rgba() returns linear
@@ -354,51 +523,15 @@ class MCPPlugin(Gimp.PlugIn):
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error(message))
 
     def _color(self, spec):
-        """Build a Gegl.Color from a flexible spec.
+        """Build a Gegl.Color from a color spec; see color_to_hex for the formats.
 
-        Accepts hex ("#rrggbb"/"#rrggbbaa"), CSS-style "rgb(r,g,b)"/"rgba(...)",
-        named colors ("red", "transparent"), or an [r,g,b(,a)] list/tuple.
-        RGB components are read as 0-255 when any of them exceeds 1, else as 0-1
-        — so rgb(255,190,216) and rgb(1.0,0.75,0.85) both do the intuitive thing.
-        Alpha is scaled independently (CSS uses 0-255 for RGB but 0-1 for alpha):
-        an alpha value <= 1 is treated as 0-1, otherwise as 0-255. So
-        rgba(255,0,0,0.5) is 50% opaque and rgba(255,0,0,128) also is.
-        Anything that isn't a str/list/tuple is passed through unchanged.
+        Raises ValueError for a color it can't read, and TypeError for a value
+        that isn't a string, list or tuple. A Gegl.Color is returned unchanged.
         """
         from gi.repository import Gegl
-
-        def _from_components(nums):
-            # Numeric components are treated as sRGB. Gegl parses hex as sRGB but
-            # rgb()/set_rgba as LINEAR, so we normalize to 0-255 and build a hex
-            # string — the only verified sRGB-correct construction path.
-            vals = [float(n) for n in nums]
-            if len(vals) < 3:
-                raise ValueError(f"color needs at least 3 components: {nums!r}")
-            # Scale RGB off the RGB channels only — alpha lives on its own scale.
-            rgb_scale = 255.0 if any(v > 1.0 for v in vals[:3]) else 1.0
-            ch = [max(0, min(255, round(v / rgb_scale * 255.0))) for v in vals[:3]]
-            if len(vals) > 3:
-                av = vals[3]
-                # Fractional alpha (<= 1) is 0-1; larger values are 0-255.
-                a = av if av > 1.0 else av * 255.0
-                a = max(0, min(255, round(a)))
-                return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}{a:02x}")
-            return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}")
-
-        if isinstance(spec, (list, tuple)):
-            return _from_components(spec)
-
-        if isinstance(spec, str):
-            s = spec.strip()
-            if s.lower().startswith("rgb"):
-                inside = s[s.find("(") + 1:s.rfind(")")]
-                parts = [p for p in inside.replace(",", " ").split() if p]
-                return _from_components(parts)
-            # hex and named colors are handled natively by Gegl
-            return Gegl.Color.new(s)
-
-        # Already a Gegl.Color (or anything Gegl understands) — pass through
-        return spec
+        if isinstance(spec, Gegl.Color):
+            return spec
+        return Gegl.Color.new(color_to_hex(spec))
 
     def shutdown_server(self, signum=None, frame=None):
         """Gracefully shutdown the server."""
@@ -1864,7 +1997,10 @@ class MCPPlugin(Gimp.PlugIn):
             height = int(params.get("height", 1024))
             name   = str(params.get("name", "Untitled"))
             color_mode = str(params.get("color_mode", "RGB")).upper()
-            fill   = str(params.get("fill", "white"))
+            # A null fill means "not given", not the string "None" (which is
+            # transparent).
+            fill   = params.get("fill")
+            fill   = "white" if fill is None else str(fill)
             resolution = int(params.get("resolution", 72))
 
             mode_map = {
@@ -1891,7 +2027,7 @@ class MCPPlugin(Gimp.PlugIn):
             # Drawable.fill ignores the context's opacity and paint mode, which
             # an earlier call may have changed; edit_fill would blend with them.
             try:
-                if fill.lower() == "transparent":
+                if is_transparent(fill):
                     layer.add_alpha()
                     self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new canvas")
                 else:
@@ -2947,7 +3083,7 @@ class MCPPlugin(Gimp.PlugIn):
             fill   = params.get("fill", "transparent")
             # Parse the fill color before changing anything, so a bad color
             # can't leave the canvas resized but unfilled.
-            bg = None if fill.lower() == "transparent" else self._color(fill)
+            bg = None if is_transparent(fill) else self._color(fill)
             image  = self._get_image(image_index)
             src_w  = image.get_width()
             src_h  = image.get_height()
@@ -3186,7 +3322,7 @@ class MCPPlugin(Gimp.PlugIn):
             # paint mode.
             layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
             try:
-                if fill.lower() == "transparent":
+                if is_transparent(fill):
                     self._check_ok(layer.fill(Gimp.FillType.TRANSPARENT), "Filling the new layer")
                 else:
                     bg = self._color(fill)
@@ -3424,7 +3560,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             fill_type   = (params.get("fill_type") or "foreground").lower()
-            color_str   = params.get("color", "white")
+            color_str   = params.get("color")
             image    = self._get_image(image_index)
             # With no active selection GIMP applies edit_clear()/edit_fill() to
             # the ENTIRE layer. That silently destroys image content, so refuse
@@ -3438,6 +3574,13 @@ class MCPPlugin(Gimp.PlugIn):
                               "fill_layer tool for a whole-layer fill."),
                 }
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            # With no color ("" or None: the MCP server sends None when it's
+            # omitted), fill with the current foreground color.
+            fg = None
+            if fill_type not in ("transparent", "background", "pattern") and color_str not in (None, ""):
+                fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3454,8 +3597,8 @@ class MCPPlugin(Gimp.PlugIn):
                                    "Filling the selection")
                 else:
                     # foreground (default) or explicit color
-                    fg = self._color(color_str if fill_type not in ("foreground",) else color_str)
-                    Gimp.context_set_foreground(fg)
+                    if fg is not None:
+                        Gimp.context_set_foreground(fg)
                     self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                    "Filling the selection")
             finally:
@@ -3469,8 +3612,11 @@ class MCPPlugin(Gimp.PlugIn):
     def _set_colors(self, params):
         """Set foreground and/or background color."""
         try:
+            # "" counts as omitted: clients often send it for optional arguments.
             fg_str = params.get("foreground", None)
             bg_str = params.get("background", None)
+            fg_str = None if fg_str == "" else fg_str
+            bg_str = None if bg_str == "" else bg_str
             # Parse both before setting either, so a bad background can't
             # leave only the foreground changed.
             fg = self._color(fg_str) if fg_str is not None else None
@@ -3497,11 +3643,15 @@ class MCPPlugin(Gimp.PlugIn):
             tool       = params.get("tool", "pencil").lower()
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
-                if color_str:
-                    Gimp.context_set_foreground(self._color(color_str))
+                if fg is not None:
+                    Gimp.context_set_foreground(fg)
                 Gimp.context_set_brush_size(line_width)
                 coords = [x1, y1, x2, y2]
                 if tool == "paintbrush":
@@ -3531,7 +3681,8 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str else None
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3570,7 +3721,8 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str else None
+            # "" counts as omitted: clients often send it for optional arguments.
+            fg = self._color(color_str) if color_str not in (None, "") else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3694,11 +3846,15 @@ class MCPPlugin(Gimp.PlugIn):
             gtype = (Gimp.GradientType.RADIAL if gradient_type == "radial"
                      else Gimp.GradientType.LINEAR)
 
+            # Parse the colors before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = self._color(color1)
+            bg = self._color(color2)
             image.undo_group_start()
             self._push_paint_context()
             try:
-                Gimp.context_set_foreground(self._color(color1))
-                Gimp.context_set_background(self._color(color2))
+                Gimp.context_set_foreground(fg)
+                Gimp.context_set_background(bg)
                 Gimp.context_set_gradient_fg_bg_rgb()
                 # The gradient fill also uses these context settings, which an
                 # earlier call may have changed.
@@ -3784,8 +3940,8 @@ class MCPPlugin(Gimp.PlugIn):
             )
         return fields
 
-    def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
-        """Create a text layer via Gimp.TextLayer.new."""
+    def _create_text_layer_native(self, image, text, font_obj, size, x, y, color):
+        """Create a text layer via Gimp.TextLayer.new; color is a Gegl.Color."""
         if not hasattr(Gimp, "TextLayer"):
             return None
 
@@ -3814,7 +3970,7 @@ class MCPPlugin(Gimp.PlugIn):
             if cproc:
                 ccfg = cproc.create_config()
                 ccfg.set_property("layer", tl)
-                ccfg.set_property("color", self._color(color_str))
+                ccfg.set_property("color", color)
                 cproc.run(ccfg)
         except Exception:
             pass
@@ -3868,12 +4024,15 @@ class MCPPlugin(Gimp.PlugIn):
             before_ids = {lyr.get_id() for lyr in image.get_layers()}
             text_layer = None
 
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = self._color(color_str)
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(self._color(color_str))
+                Gimp.context_set_foreground(fg)
                 text_layer = self._create_text_layer_native(
-                    image, text_str, font_obj, size, x, y, color_str)
+                    image, text_str, font_obj, size, x, y, fg)
                 if text_layer is None:
                     self._create_text_layer_pdb(
                         image, text_str, font_obj, size, x, y)
@@ -3916,7 +4075,10 @@ class MCPPlugin(Gimp.PlugIn):
             if isinstance(new_font, str) and not new_font.strip():
                 new_font = None
             new_size    = params.get("size", None)
+            # A blank color, like a blank font, leaves it unchanged.
             new_color   = params.get("color", None)
+            if new_color == "":
+                new_color = None
             # Parse the color before any edit, so a bad color can't leave the
             # text, font or size changed.
             color_obj = self._color(new_color) if new_color is not None else None

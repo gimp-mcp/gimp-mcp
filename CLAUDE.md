@@ -86,18 +86,30 @@ The main interface is the `call_api` tool with parameters:
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
 - Colors: the MCP tools' color arguments (`fill`, `color`, `foreground`, ...) accept
-  hex (`"#rrggbb"`, `"#rgb"`, `"#rrggbbaa"`), CSS `"rgb(r,g,b)"`/`"rgba(r,g,b,a)"`, or
-  a basic color name. `rgb()` values are sRGB and read as 0-255 when any of them is
-  above 1, else as 0-1. Alpha is read as 0-1 when it is at most 1, else as 0-255.
-  - Names: only the 16 basic HTML names (`black`, `white`, `gray`, `silver`, `red`,
-    `maroon`, `yellow`, `olive`, `lime`, `green`, `aqua`, `teal`, `blue`, `navy`,
-    `fuchsia`, `purple`) and `transparent`. Other CSS names (`orange`, `gold`, `grey`,
-    `cornflowerblue`, ...) and invalid strings paint **cyan** and still report success
-    (#44); use hex for them.
+  hex (`"#rgb"`, `"#rgba"`, `"#rrggbb"`, `"#rrggbbaa"`), CSS `"rgb(r,g,b)"`/`"rgba(r,g,b,a)"`
+  (or `"rgb(r g b / a)"`), any of the 148 CSS color names (`orange`, `cornflowerblue`, ...), or `transparent`
+  (or `none`).
+  `rgb()` and `rgba()` both take 3 values or 4 (the 4th is alpha). RGB values are sRGB
+  and read as 0-255 when any of them is above 1, else as 0-1;
+  percentages (`rgb(50%,50%,50%)`) work too, for all three values or none. Alpha is read
+  as 0-1 when it is at most 1, else as 0-255, or as a percentage. Anything else
+  (unknown names, hex without `#`, `hsl()`, `cmyk()`, the wrong number of values)
+  returns an error and paints nothing, when the tool uses the color: `fill_selection`
+  with `fill_type` `background`, `pattern` or `transparent` ignores `color`.
   - Alpha: fills that paint with the foreground color (`fill_rectangle`, `fill_ellipse`,
     ...) ignore the color's alpha and paint fully opaque. Use a layer's opacity for
-    translucency.
-- In `call_api` code, build colors from hex: `Gegl.Color.new("#ff8000")`.
+    translucency. So `transparent`/`none` give a transparent fill only as the `fill` of
+    `new_canvas` and `create_layer`; as `resize_canvas`'s `fill` they enlarge the canvas
+    without adding a background (nothing is flattened, and parts of layers that extend past
+    the old edge become visible). Tools that paint with the color
+    (`fill_rectangle`, `fill_ellipse`, `fill_layer`, `draw_*`, `fill_selection`'s
+    foreground fill) paint them as opaque black. To make the selected pixels transparent,
+    use `fill_selection(fill_type="transparent")`; the selection stays active, and
+    `select_none` removes it.
+- In `call_api` code, build colors from hex: `Gegl.Color.new("#ff8000")`. Unlike the tools,
+  `Gegl.Color.new()` knows only the 16 basic HTML color names and `transparent`/`none`
+  besides hex, and turns any other name (`orange`, `gold`, ...) into **cyan** without an
+  error.
   `Gegl.Color.new("rgb(...)")` and `set_rgba()` take **linear** values, so
   `rgb(255,...)` clamps to white and `rgb(1.0, 0.5, 0)` looks washed out; only hex is
   read as sRGB. (The plugin's tools convert every color format to hex for this reason.)
