@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import socket
 import json
+import os
+import shutil
 import sys
+import tempfile
 
 def cmd(t, params=None):
     s = socket.socket()
@@ -333,6 +336,197 @@ cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 10, 'heigh
 _r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
 chk('fill_selection_with_selection_succeeds', _r.get('status') == 'success', _r.get('error'))
 cmd('select_none', {'image_index': 0})
+
+print()
+print("=== Cat 11: Blur, sharpen and drop shadow change pixels ===")
+# Based on the pixel checks in #62 by gr8monk3ys.
+
+
+def canvas(width=200, height=200, fill='white'):
+    """Open a fresh image at index 0, or stop: the next steps would edit an older image."""
+    _r = cmd('new_canvas', {'width': width, 'height': height, 'fill': fill})
+    if _r.get('status') != 'success':
+        print(f"new_canvas failed: {_r.get('error', '')}", file=sys.stderr)
+        sys.exit(1)
+    return _r.get('results', {}).get('image_id')
+
+
+# blur: 5px left of the black/white edge picks up some white.
+canvas()
+half_black()
+_p = px(145, 50)
+chk('f_blur_starts_black', _p == [0, 0, 0], _p)
+t('f_blur', cmd('blur', {'image_index': 0, 'radius_x': 10.0, 'radius_y': 10.0}))
+_p = px(145, 50)
+chk('f_blur_spreads', _p is not None and _p[0] > 0, _p)
+
+# sharpen: next to a gray edge, the light side gets lighter.
+cmd('fill_layer', {'image_index': 0, 'color': '#a0a0a0'})
+cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': 150, 'height': 200, 'color': '#606060'})
+_p = px(151, 50)
+chk('f_sharpen_starts_gray', _p == [0xa0, 0xa0, 0xa0], _p)
+t('f_sharpen', cmd('sharpen', {'image_index': 0, 'amount': 100, 'radius': 3.0}))
+_p = px(151, 50)
+chk('f_sharpen_raises_edge_contrast', _p is not None and _p[0] > 0xa0, _p)
+
+
+def layers():
+    """The image's layers, or None if list_layers failed or couldn't read a layer."""
+    _r = cmd('list_layers', {'image_index': 0})
+    _ls = _r.get('results', {}).get('layers') if _r.get('status') == 'success' else None
+    if _ls is None or any('name' not in lyr or 'id' not in lyr for lyr in _ls):
+        print(f"  list_layers failed: {_r.get('error') or _ls}", file=sys.stderr)
+        return None
+    return _ls
+
+
+def shadow_layer():
+    return next((lyr for lyr in layers() or [] if lyr['name'] == 'Drop Shadow'), None)
+
+
+def gimp_exec(*lines):
+    """Run Python in the plug-in; return its printed output, or None on error."""
+    _r = cmd('exec', {'args': ['python-fu-exec', list(lines)]})
+    return ''.join(_r.get('results') or []).strip() if _r.get('status') == 'success' else None
+
+
+def shadow_alpha(shadow, x, y):
+    """Alpha of the Drop Shadow layer at image coordinates (x, y)."""
+    _, ox, oy = shadow['offsets']
+    return cmd('get_pixel_color', {'image_index': 0, 'layer_name': 'Drop Shadow',
+                                   'x': x - ox, 'y': y - oy}).get('results', {}).get('alpha')
+
+
+# A shadow of an 80x80 box keeps the opacity asked for and has a soft edge.
+# The box's position is locked: the shadow copy must still move and be padded.
+canvas()
+t('ds_box_layer', cmd('create_layer', {'image_index': 0, 'name': 'Box'}))
+t('ds_box_fill', cmd('fill_rectangle', {'image_index': 0, 'layer_name': 'Box', 'x': 60, 'y': 60,
+                                        'width': 80, 'height': 80, 'color': '#ff0000'}))
+chk('ds_box_lock', gimp_exec(
+    "_ds_box = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Box'][0]",
+    "print(_ds_box.set_lock_position(True))") == 'True')
+t('ds_set_foreground', cmd('set_colors', {'foreground': '#00ff00'}))
+t('ds_box', cmd('apply_drop_shadow', {'image_index': 0, 'layer_name': 'Box', 'offset_x': 8,
+                                      'offset_y': 8, 'blur_radius': 4, 'opacity': 50}))
+# The shadow is black, but the user's foreground color stays green.
+_fg = cmd('get_context_state', {}).get('results', {}).get('foreground_color', {}).get('rgba')
+chk('ds_keeps_foreground', _fg is not None and [round(v, 3) for v in _fg] == [0.0, 1.0, 0.0, 1.0], _fg)
+_s = shadow_layer()
+chk('ds_keeps_opacity', _s is not None and round(_s['opacity']) == 50, _s and _s['opacity'])
+# The shadow's left edge is at x = 60 + 8. 4px left of it is mostly clear;
+# a shadow left at x = 60 would be mostly opaque there.
+_a = shadow_alpha(_s, 68, 100) if _s else None
+chk('ds_edge_is_soft', _a is not None and 0 < _a < 255, f'edge alpha={_a}')
+_a = shadow_alpha(_s, 64, 100) if _s else None
+chk('ds_moved_to_offset', _a is not None and _a < 128, f'alpha 4px outside the edge={_a}')
+chk('ds_source_stays_locked', gimp_exec("print(_ds_box.get_lock_position())") == 'True')
+
+# A shadow of a layer that fills the canvas, moved by (20, 20), spreads past
+# the layer's left edge at x = 20, which needs the shadow layer to be padded.
+canvas()
+t('ds_full', cmd('apply_drop_shadow', {'image_index': 0, 'offset_x': 20, 'offset_y': 20,
+                                       'blur_radius': 4, 'opacity': 100}))
+_s = shadow_layer()
+_a = shadow_alpha(_s, 17, 100) if _s else None
+chk('ds_spreads_past_layer_edge', _a is not None and _a > 0, {'layer': _s, 'alpha': _a})
+
+# Moved to x = -1, the shadow gets no padding on the left, but its edge must
+# still fade: outside the layer is transparent, not a repeat of its edge.
+canvas()
+t('ds_off_left', cmd('apply_drop_shadow', {'image_index': 0, 'offset_x': -1, 'offset_y': 20,
+                                           'blur_radius': 4, 'opacity': 100}))
+_s = shadow_layer()
+_a = shadow_alpha(_s, 0, 100) if _s else None
+chk('ds_unpadded_edge_fades', _a is not None and 0 < _a < 230, {'layer': _s, 'alpha': _a})
+
+# The same for a layer with a white mask: the mask copied into the shadow
+# must not hide the padding.
+canvas()
+t('ds_masked_layer', cmd('create_layer', {'image_index': 0, 'name': 'Masked', 'fill': '#ff0000'}))
+chk('ds_add_mask', gimp_exec(
+    "_ds_m = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Masked'][0]",
+    "print(_ds_m.add_mask(_ds_m.create_mask(Gimp.AddMaskType.WHITE)))") == 'True')
+t('ds_masked', cmd('apply_drop_shadow', {'image_index': 0, 'layer_name': 'Masked', 'offset_x': 20,
+                                         'offset_y': 20, 'blur_radius': 4, 'opacity': 100}))
+# The alpha that shows: the layer's alpha times its mask, if it has one.
+_shown = gimp_exec(
+    "_ds_s = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Drop Shadow'][0]",
+    "_ds_x, _ds_y = 17 - _ds_s.get_offsets().offset_x, 100 - _ds_s.get_offsets().offset_y",
+    "_ds_k = _ds_s.get_mask()",
+    "print(_ds_s.get_pixel(_ds_x, _ds_y).get_rgba().alpha"
+    " * (_ds_k.get_pixel(_ds_x, _ds_y).get_rgba().red if _ds_k else 1.0))")
+chk('ds_masked_spreads_past_layer_edge', _shown is not None and float(_shown) > 0, _shown)
+
+# Bad arguments fail before the shadow layer is added, so the layer stack is
+# unchanged. (tests/test_pdb_status.py covers a blur that fails after it.)
+canvas()
+for _bad in ({'blur_radius': 'inf'}, {'blur_radius': 'nan'}, {'blur_radius': -1},
+             {'blur_radius': 2000}, {'opacity': 200}):
+    _before = layers()
+    _r = cmd('apply_drop_shadow', dict(_bad, image_index=0))
+    _after = layers()
+    _ids = [[lyr['id'] for lyr in ls] if ls is not None else None for ls in (_before, _after)]
+    chk('ds_rejects_' + '_'.join(f'{k}_{v}' for k, v in _bad.items()),
+        _r.get('status') == 'error' and _ids[0] is not None and _ids[0] == _ids[1],
+        {'status': _r.get('status'), 'layer_ids': _ids, 'error': _r.get('error')})
+
+print()
+print("=== Cat 12: export_web_optimized file names ===")
+# Based on #62 by gr8monk3ys. The files used to be named after the export
+# copy, which has no file, so every export went to image.jpg / image.png.
+# The snap GIMP has a private /tmp, so use a folder under the home directory.
+_home_tmp = os.path.expanduser('~/tmp')
+os.makedirs(_home_tmp, exist_ok=True)
+_out = tempfile.mkdtemp(prefix='gimp_mcp_web_', dir=_home_tmp)
+
+
+def read_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+try:
+    _src = os.path.join(_out, 'photo.png')
+    canvas(64, 64, '#3366cc')
+    t('web_save_source', cmd('export_image', {'image_index': 0, 'file_path': _src, 'format': 'png'}))
+    _src_bytes = read_bytes(_src) if os.path.exists(_src) else None
+    _o = t('web_open_source', cmd('open_image', {'file_path': _src}))
+    _id = _o.get('results', {}).get('image_id') if _o.get('status') == 'success' else None
+    _idx = next((i['index'] for i in cmd('list_images', {}).get('results', {}).get('images', [])
+                 if _id is not None and i['image_id'] == _id), None)
+    chk('web_source_open', _idx is not None, {'image_id': _id, 'index': _idx})
+    if _idx is not None:
+        _w = t('web_export', cmd('export_web_optimized', {'image_index': _idx, 'output_dir': _out}))
+        _res = _w.get('results', {})
+        # photo.png would overwrite the source, so both files get a suffix.
+        chk('web_named_after_source',
+            [os.path.basename(_res.get(k, '')) for k in ('jpeg_path', 'png_path')]
+            == ['photo_web.jpg', 'photo_web.png'], _res)
+        chk('web_source_untouched', _src_bytes is not None and read_bytes(_src) == _src_bytes)
+        # Through a symlinked folder the paths differ, but it's the same file.
+        # Windows allows symlinks only with Developer Mode or admin rights.
+        _link = os.path.join(_home_tmp, os.path.basename(_out) + '_link')
+        try:
+            os.symlink(_out, _link, target_is_directory=True)
+        except OSError as e:
+            print(f"  SKIP web_symlink: cannot create a symlink ({e})")
+            _link = None
+        if _link is not None:
+            try:
+                _res = cmd('export_web_optimized', {'image_index': _idx, 'output_dir': _link}).get('results', {})
+                chk('web_symlink_named_after_source',
+                    os.path.basename(_res.get('png_path', '')) == 'photo_web.png', _res)
+                chk('web_symlink_source_untouched', _src_bytes is not None and read_bytes(_src) == _src_bytes)
+            finally:
+                os.remove(_link)
+        cmd('close_image', {'image_index': _idx})
+    # An image without a file is named after its index.
+    canvas(64, 64, '#3366cc')
+    _res = cmd('export_web_optimized', {'image_index': 0, 'output_dir': _out}).get('results', {})
+    chk('web_untitled_name', os.path.basename(_res.get('jpeg_path', '')) == 'image_0.jpg', _res)
+finally:
+    shutil.rmtree(_out, ignore_errors=True)
 
 print()
 print(f"=== TOTAL: {passed}/{passed+failed} PASSED ===")

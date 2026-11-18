@@ -2347,6 +2347,21 @@ class MCPPlugin(Gimp.PlugIn):
                 hi = getattr(pspec, "maximum", None)
                 if isinstance(value, (int, float)) and lo is not None and not lo <= value <= hi:
                     raise ValueError(f"{op_name} {key}={value} is outside [{lo}, {hi}]")
+                # GIMP 3.2 exposes GEGL enum properties as GimpParamChoice
+                # (string nicks), and an unknown nick is ignored with only a
+                # warning, so reject it here. Older PyGObject releases may not
+                # pass this pspec to libgimp; then skip the check rather than
+                # fail the filter.
+                choice = None
+                gtype = getattr(pspec, "__gtype__", None)
+                if gtype is not None and gtype.name == "GimpParamChoice":
+                    try:
+                        choice = Gimp.param_spec_choice_get_choice(pspec)
+                    except (TypeError, AttributeError):
+                        pass
+                    if choice is not None and not choice.is_valid(value):
+                        raise ValueError(f"{op_name} {key}={value!r} is not one of: "
+                                         f"{', '.join(choice.list_nicks())}")
                 config.set_property(key, value)
             filtr.update()
             drawable.merge_filter(filtr)
@@ -4298,8 +4313,14 @@ class MCPPlugin(Gimp.PlugIn):
             blur_radius = float(params.get("blur_radius", 10))
             color_str   = params.get("color", "black")
             opacity     = float(params.get("opacity", 60))
-            # Parse the color before adding the shadow layer, so a bad color
-            # can't leave an unfilled shadow layer in the image.
+            # Check the arguments before adding the shadow layer, so a bad
+            # value can't leave a stray layer in the image.
+            # 1500 is gegl:gaussian-blur's maximum. Checking it here also
+            # avoids padding the layer for a radius the blur then refuses.
+            if not math.isfinite(blur_radius) or not 0 <= blur_radius <= 1500:
+                raise ValueError(f"blur_radius must be between 0 and 1500, got {params.get('blur_radius')!r}")
+            if not math.isfinite(opacity) or not 0 <= opacity <= 100:
+                raise ValueError(f"opacity must be between 0 and 100, got {params.get('opacity')!r}")
             shadow_color = self._color(color_str)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
@@ -4310,50 +4331,105 @@ class MCPPlugin(Gimp.PlugIn):
                 shadow_layer = drawable.copy()
                 src_pos = image.get_item_position(drawable)
                 image.insert_layer(shadow_layer, None, src_pos + 1)
-
-                # 2. Fill shadow layer with shadow color, preserving alpha shape
-                Gimp.context_set_foreground(shadow_color)
-                shadow_layer.set_lock_alpha(True)
                 try:
-                    self._check_ok(Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND),
-                                   "Filling the shadow layer")
-                finally:
-                    shadow_layer.set_lock_alpha(False)
-
-                # 3. Set opacity and offset
-                shadow_layer.set_opacity(opacity)
-                offs = shadow_layer.get_offsets()
-                shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
-
-                # 4. Blur the shadow layer. plug-in-gauss is missing from some
-                # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.
-                if blur_radius > 0:
-                    size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
-                    blur_proc = Gimp.get_pdb().lookup_procedure("plug-in-gauss")
-                    if blur_proc:
-                        cfg = blur_proc.create_config()
-                        cfg.set_property("image",      image)
-                        cfg.set_property("drawable",   shadow_layer)
-                        cfg.set_property("horizontal", size)
-                        cfg.set_property("vertical",   size)
-                        cfg.set_property("method",     0)
-                        self._run_pdb(blur_proc, cfg)
-                    else:
-                        # The GEGL filter takes the radius directly, the way
-                        # blur and apply_gaussian_blur pass it.
-                        self._apply_gegl_filter(image, shadow_layer,
-                                                "gegl:gaussian-blur", {
-                                "std-dev-x": blur_radius,
-                                "std-dev-y": blur_radius,
-                            })
-
-                shadow_layer.set_name("Drop Shadow")
+                    self._build_drop_shadow(image, shadow_layer, shadow_color,
+                                            offset_x, offset_y, blur_radius, opacity)
+                except Exception:
+                    # A step GIMP refuses (e.g. a radius outside the blur's
+                    # range) must not leave a half-made shadow layer behind.
+                    if shadow_layer.is_valid():
+                        image.remove_layer(shadow_layer)
+                    raise
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _build_drop_shadow(self, image, shadow_layer, shadow_color,
+                           offset_x, offset_y, blur_radius, opacity):
+        """Turn an inserted copy of the source layer into its drop shadow."""
+        # The copy keeps the source's locks, which would block the fill, the
+        # offset and the padding below. The source keeps its own.
+        shadow_layer.set_lock_content(False)
+        shadow_layer.set_lock_position(False)
+
+        # 2. Fill shadow layer with shadow color, preserving alpha shape.
+        # The pushed context keeps the user's foreground color unchanged.
+        self._push_paint_context()
+        shadow_layer.set_lock_alpha(True)
+        try:
+            Gimp.context_set_foreground(shadow_color)
+            self._check_ok(Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND),
+                           "Filling the shadow layer")
+        finally:
+            shadow_layer.set_lock_alpha(False)
+            Gimp.context_pop()
+
+        # 3. Set opacity and offset
+        shadow_layer.set_opacity(opacity)
+        offs = shadow_layer.get_offsets()
+        self._check_ok(shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y),
+                       "Moving the shadow layer")
+
+        # 4. Blur the shadow layer. plug-in-gauss is missing from some
+        # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.
+        if blur_radius > 0:
+            # An enabled mask copied from the source would be black in the
+            # padding below and hide the blur there, so make it part of the
+            # shadow's alpha first. A disabled mask doesn't show and can stay.
+            if shadow_layer.get_mask() is not None and shadow_layer.get_apply_mask():
+                self._check_ok(shadow_layer.remove_mask(Gimp.MaskApplyMode.APPLY),
+                               "Applying the shadow layer's mask")
+            if not shadow_layer.has_alpha():
+                shadow_layer.add_alpha()
+            # Pad the layer first: a blur can't spread past the layer's
+            # edges, so a shadow that fills its layer gets a hard edge.
+            # 3 radii hold almost all of the blur. Each side is padded only up
+            # to the canvas edge, since the soft edge isn't visible past it,
+            # and a big radius would otherwise make a huge layer.
+            pad = math.ceil(blur_radius * 3) + 1
+            offs = shadow_layer.get_offsets()
+            x, y = offs.offset_x, offs.offset_y
+            width, height = shadow_layer.get_width(), shadow_layer.get_height()
+            left = min(pad, max(0, x))
+            right = min(pad, max(0, image.get_width() - (x + width)))
+            top = min(pad, max(0, y))
+            bottom = min(pad, max(0, image.get_height() - (y + height)))
+            # Stay within GIMP's maximum layer size.
+            left = min(left, max(0, Gimp.MAX_IMAGE_SIZE - width))
+            right = min(right, max(0, Gimp.MAX_IMAGE_SIZE - width - left))
+            top = min(top, max(0, Gimp.MAX_IMAGE_SIZE - height))
+            bottom = min(bottom, max(0, Gimp.MAX_IMAGE_SIZE - height - top))
+            if left or right or top or bottom:
+                # Gimp.Layer.resize explicitly: a copied text layer's own
+                # resize() is the 2-argument text-box resize.
+                self._check_ok(Gimp.Layer.resize(shadow_layer, width + left + right,
+                                                 height + top + bottom, left, top),
+                               "Padding the shadow layer")
+            size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
+            blur_proc = Gimp.get_pdb().lookup_procedure("plug-in-gauss")
+            if blur_proc:
+                cfg = blur_proc.create_config()
+                cfg.set_property("image",      image)
+                cfg.set_property("drawable",   shadow_layer)
+                cfg.set_property("horizontal", size)
+                cfg.set_property("vertical",   size)
+                cfg.set_property("method",     0)
+                self._run_pdb(blur_proc, cfg)
+            else:
+                # The GEGL filter takes the radius directly, the way
+                # blur and apply_gaussian_blur pass it. Outside the layer
+                # counts as transparent: the default ("clamp") repeats the
+                # edge pixels, which keeps an unpadded edge hard.
+                self._apply_gegl_filter(image, shadow_layer, "gegl:gaussian-blur", {
+                    "std-dev-x": blur_radius,
+                    "std-dev-y": blur_radius,
+                    "abyss-policy": "none",
+                })
+
+        shadow_layer.set_name("Drop Shadow")
 
     def _apply_gaussian_blur(self, params):
         """Apply Gaussian blur."""
@@ -4559,8 +4635,25 @@ class MCPPlugin(Gimp.PlugIn):
                         new_h, new_w = mh, max(1, int(mh * aspect))
                     self._check_ok(dup.scale(new_w, new_h), "Scaling the export copy")
 
-                gio_file = dup.get_file()
-                raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else "image"
+                # Name the files after the source image: the duplicate has no
+                # file, which sent every export to image.jpg / image.png.
+                gio_file = image.get_file()
+                source_path = gio_file.get_path() if gio_file else None
+                raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{image_index}"
+                if source_path:
+                    # Never overwrite the source file itself (e.g. photo.png
+                    # exported back into its own folder), also when the folder
+                    # is reached through a symlink.
+                    def is_source(path):
+                        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(source_path)):
+                            return True
+                        try:
+                            return os.path.exists(path) and os.path.samefile(path, source_path)
+                        except OSError:
+                            return False
+                    while any(is_source(os.path.join(output_dir, f"{raw_name}.{ext}"))
+                              for ext in ("jpg", "png")):
+                        raw_name += "_web"
                 jpeg_path = os.path.join(output_dir, f"{raw_name}.jpg")
                 png_path  = os.path.join(output_dir, f"{raw_name}.png")
                 jpeg_size = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, True)
