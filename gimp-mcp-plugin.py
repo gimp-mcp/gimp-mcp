@@ -4090,8 +4090,8 @@ class MCPPlugin(Gimp.PlugIn):
             color_obj = self._color(new_color) if new_color is not None else None
             if new_size is not None:
                 new_size = float(new_size)
-                if not 0 < new_size < float("inf"):
-                    raise ValueError(f"size must be a positive number, got {new_size}")
+                if not 0 < new_size <= 8192:
+                    raise ValueError(f"size must be greater than 0 and at most 8192, got {new_size}")
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
             if new_text is None and new_font is None and new_size is None and color_obj is None:

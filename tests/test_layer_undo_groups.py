@@ -64,7 +64,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
     def test_edit_text_rejects_invalid_size_before_any_edit(self):
         self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
         self.plugin._run_pdb = self.calls.run_pdb
-        for size in ("abc", 0, -1, "nan", float("inf"), float("-inf")):
+        for size in ("abc", 0, -1, "nan", float("inf"), float("-inf"), 8193, "8193"):
             with self.subTest(size=size):
                 self.calls.reset_mock()
                 self.plugin._get_image.reset_mock()
@@ -78,19 +78,19 @@ class LayerUndoGroupsTests(unittest.TestCase):
                 if size == "abc":
                     self.assertIn("could not convert string to float", result["error"])
                 else:
-                    self.assertIn("size must be a positive number", result["error"])
+                    self.assertIn("size must be greater than 0 and at most 8192", result["error"])
                 self.plugin._get_image.assert_not_called()
                 self.plugin._resolve_layer.assert_not_called()
                 self.plugin._lookup_pdb.assert_not_called()
                 self.assertEqual(self.calls.mock_calls, [])
 
-    def test_edit_text_keeps_positive_finite_sizes(self):
+    def test_edit_text_keeps_sizes_within_gimp_range(self):
         self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
         self.plugin._run_pdb = self.calls.run_pdb
         config = self.calls.procedure.create_config.return_value
         unit = Mock()
         with patch.object(self.module.Gimp, "Unit", unit, create=True):
-            for size in (0.5, 24, "36"):
+            for size in (0.5, 24, "36", 8192, "8192"):
                 with self.subTest(size=size):
                     self.calls.reset_mock()
                     self.plugin._lookup_pdb.reset_mock()
