@@ -2410,7 +2410,7 @@ def edit_text(
 
     Parameters:
     - layer_name: Name of the text layer to edit
-    - text: New text content (omit to leave unchanged)
+    - text: New text content (omit to leave unchanged; pass an empty string to clear it)
     - font: New font name, as listed by list_fonts (omit, or pass an empty name,
       to leave unchanged). Common GIMP 2 aliases resolve to their GIMP 3 names; an unknown name falls
       back to a default font and adds a warning to the result.
