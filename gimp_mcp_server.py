@@ -71,7 +71,7 @@ GIMP_TIMEOUT = _timeout_from_env()
 
 # Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
 # (tests/test_version_handshake.py checks this).
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.5.0"
 
 
 def _parse_version(value):

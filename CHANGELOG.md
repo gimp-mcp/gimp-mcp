@@ -13,6 +13,13 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
+### Changed
+- A malformed `rgb()` / `rgba()` color, such as `rgb(50%,50%,50%)` or `rgb(1,2)`, returns an
+  error and leaves the image unchanged. It used to paint cyan and report success (#41).
+  Unknown color names still paint cyan (#44).
+
 ### Fixed
 - `get_state_snapshot` validates region coordinates and required dimensions before
   connecting to GIMP. Missing sizes no longer use `max_size`, and invalid values
@@ -187,7 +194,8 @@ First release on PyPI as `gimp-mcp-plugin` (#96).
 - `get_pixel_color` returns sRGB instead of linear values (#55).
 - The plugin no longer crashes after a client-side timeout (#82).
 
-[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.0...v0.2.1
