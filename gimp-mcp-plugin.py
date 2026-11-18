@@ -3432,10 +3432,14 @@ class MCPPlugin(Gimp.PlugIn):
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
+            if opacity is None and blend_mode is None and visible is None:
+                return {"status": "success", "results": {"status": "success"}}
+            if opacity is not None:
+                opacity = float(opacity)
             image.undo_group_start()
             try:
                 if opacity is not None:
-                    layer.set_opacity(float(opacity))
+                    layer.set_opacity(opacity)
                 if blend_mode is not None:
                     layer.set_mode(self._blend_mode_from_string(blend_mode))
                 if visible is not None:
@@ -4084,6 +4088,8 @@ class MCPPlugin(Gimp.PlugIn):
             color_obj = self._color(new_color) if new_color is not None else None
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
+            if new_text is None and new_font is None and new_size is None and color_obj is None:
+                return {"status": "success", "results": {"status": "success"}}
             # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
             # before any edit. _resolve_font falls back to an alias or a default
             # font, so this only fails if GIMP has no fonts at all.
