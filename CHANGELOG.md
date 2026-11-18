@@ -31,8 +31,8 @@ right command when the versions differ.
 ### Changed
 - Some color strings that used to paint now return an error. Use hex or
   `rgb(r, g, b)` instead:
-  - `cmyk()` colors. GIMP read some of them, but they were never documented, and Gegl
-    reads others, such as `cmyk(0%,100%,100%,0%)`, as cyan.
+  - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,
+    and Gegl reads others, such as `cmyk(0%,100%,100%,0%)`, as cyan.
   - `rgb()` values separated partly by commas and partly by spaces, such as
     `rgb(255, 128 0)`.
   - Text after the closing paren, as in `rgb(1,2,3) junk`, or another word in place of

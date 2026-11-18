@@ -1993,7 +1993,10 @@ class MCPPlugin(Gimp.PlugIn):
             height = int(params.get("height", 1024))
             name   = str(params.get("name", "Untitled"))
             color_mode = str(params.get("color_mode", "RGB")).upper()
-            fill   = str(params.get("fill", "white"))
+            # A null fill means "not given", not the string "None" (which is
+            # transparent).
+            fill   = params.get("fill")
+            fill   = "white" if fill is None else str(fill)
             resolution = int(params.get("resolution", 72))
 
             mode_map = {

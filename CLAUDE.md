@@ -98,7 +98,12 @@ The main interface is the `call_api` tool with parameters:
   with `fill_type` `background`, `pattern` or `transparent` ignores `color`.
   - Alpha: fills that paint with the foreground color (`fill_rectangle`, `fill_ellipse`,
     ...) ignore the color's alpha and paint fully opaque. Use a layer's opacity for
-    translucency.
+    translucency. So `transparent`/`none` give a transparent fill only as the `fill` of
+    `new_canvas`, `create_layer` and `resize_canvas`. Tools that paint with the color
+    (`fill_rectangle`, `fill_ellipse`, `fill_layer`, `draw_*`, `fill_selection`'s
+    foreground fill) paint them as opaque black. To make the selected pixels transparent,
+    use `fill_selection(fill_type="transparent")`; the selection stays active, and
+    `select_none` removes it.
 - In `call_api` code, build colors from hex: `Gegl.Color.new("#ff8000")`.
   `Gegl.Color.new("rgb(...)")` and `set_rgba()` take **linear** values, so
   `rgb(255,...)` clamps to white and `rgb(1.0, 0.5, 0)` looks washed out; only hex is

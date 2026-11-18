@@ -184,30 +184,63 @@ def main():
         check(f"{name} opened no undo group", not started, len(started))
 
     # No color ("" or None, which the MCP server sends for an omitted color)
-    # means "use the current foreground": the tool doesn't parse one. Fill
-    # types that don't use the color ignore even a bad one.
+    # means "use the current foreground": the tool parses no color, sets no
+    # foreground, and paints. Fill types that don't use the color ignore even
+    # a bad one. The stubs record which paint operation ran.
+    gimp = sys.modules["gi.repository"].Gimp
+    ops = []
+    gimp.context_set_foreground = staticmethod(lambda color: ops.append(f"set_foreground {color}"))
+    gimp.context_set_brush_size = staticmethod(lambda size: None)
+    gimp.context_set_stroke_method = staticmethod(lambda method: None)
+    gimp.context_set_line_width = staticmethod(lambda width: None)
+    gimp.StrokeMethod = types.SimpleNamespace(LINE=0)
+    gimp.pencil = staticmethod(lambda drawable, coords: ops.append("pencil") or True)
+    gimp.Drawable.edit_fill = staticmethod(
+        lambda drawable, fill_type: ops.append(f"edit_fill {fill_type}") or True)
+    gimp.Drawable.edit_clear = staticmethod(lambda drawable: ops.append("edit_clear") or True)
+    img.select_rectangle = lambda *args: None
+    img.select_ellipse = lambda *args: None
+    p._lookup_pdb = lambda name: types.SimpleNamespace(
+        name=name, create_config=lambda: types.SimpleNamespace(set_property=lambda *args: None))
+    p._run_pdb = lambda proc, config: ops.append(proc.name)
+    stroke = "gimp-drawable-edit-stroke-selection"
+    fill_fg = f"edit_fill {gimp.FillType.FOREGROUND}"
+    fill_bg = f"edit_fill {gimp.FillType.BACKGROUND}"
+
     parsed = []
     real_color = p._color
     p._color = lambda spec: parsed.append(spec) or real_color(spec)
-    for tool, params in [
-        ("_draw_line", {"color": None, "x2": 5, "y2": 5}),
-        ("_draw_line", {"color": "", "x2": 5, "y2": 5}),
-        ("_draw_rectangle", {"color": "", **rect}),
-        ("_draw_ellipse", {"color": None, **rect}),
-        ("_fill_selection", {"color": None, "fill_type": None}),
-        ("_fill_selection", {"color": "", "fill_type": "foreground"}),
-        ("_fill_selection", {"color": "nope", "fill_type": "background"}),
-        ("_fill_selection", {"color": "nope", "fill_type": "transparent"}),
-        ("_fill_selection", {}),  # no color key at all (a raw socket call)
+    for tool, params, expected_ops in [
+        ("_draw_line", {"color": None, "x2": 5, "y2": 5}, ["pencil"]),
+        ("_draw_line", {"color": "", "x2": 5, "y2": 5}, ["pencil"]),
+        ("_draw_rectangle", {"color": "", **rect}, [stroke]),
+        ("_draw_ellipse", {"color": None, **rect}, [stroke]),
+        ("_fill_selection", {"color": None, "fill_type": None}, [fill_fg]),
+        ("_fill_selection", {"color": "", "fill_type": "foreground"}, [fill_fg]),
+        ("_fill_selection", {}, [fill_fg]),  # no color key at all (a raw socket call)
+        ("_fill_selection", {"color": "nope", "fill_type": "background"}, [fill_bg]),
+        ("_fill_selection", {"color": "nope", "fill_type": "transparent"}, ["edit_clear"]),
     ]:
         parsed.clear()
+        ops.clear()
         r = getattr(p, tool)({"image_index": 0, **params})
         name = f"{tool} {params}"
+        check(f"{name} succeeds", r.get("status") == "success", r)
         check(f"{name} parses no color", not parsed, parsed)
-        check(f"{name} reports no color error",
-              "color" not in r.get("error", "").lower(), r.get("error"))
-        if tool == "_fill_selection":  # the stub supports a whole fill_selection call
-            check(f"{name} succeeds", r.get("status") == "success", r)
+        check(f"{name} runs {expected_ops} and sets no foreground", ops == expected_ops, ops)
+
+    # Control: with a color, the same calls set the foreground to it first.
+    # (The stub's Gegl.Color.new returns ("color", hex).)
+    set_red = f"set_foreground {('color', '#ff0000')}"
+    for tool, params, expected_ops in [
+        ("_draw_line", {"color": "red", "x2": 5, "y2": 5}, [set_red, "pencil"]),
+        ("_draw_rectangle", {"color": "red", **rect}, [set_red, stroke]),
+        ("_fill_selection", {"color": "red"}, [set_red, fill_fg]),
+    ]:
+        ops.clear()
+        r = getattr(p, tool)({"image_index": 0, **params})
+        check(f"{tool} {params} runs {expected_ops}",
+              r.get("status") == "success" and ops == expected_ops, (r.get("error"), ops))
     p._color = real_color
 
     # resize_canvas: fill="none" is transparent, so it must not flatten the
