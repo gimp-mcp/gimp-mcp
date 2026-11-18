@@ -4343,6 +4343,11 @@ class MCPPlugin(Gimp.PlugIn):
     def _build_drop_shadow(self, image, shadow_layer, shadow_color,
                            offset_x, offset_y, blur_radius, opacity):
         """Turn an inserted copy of the source layer into its drop shadow."""
+        # The copy keeps the source's locks, which would block the fill, the
+        # offset and the padding below. The source keeps its own.
+        shadow_layer.set_lock_content(False)
+        shadow_layer.set_lock_position(False)
+
         # 2. Fill shadow layer with shadow color, preserving alpha shape.
         # The pushed context keeps the user's foreground color unchanged.
         self._push_paint_context()
@@ -4363,23 +4368,37 @@ class MCPPlugin(Gimp.PlugIn):
         # 4. Blur the shadow layer. plug-in-gauss is missing from some
         # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.
         if blur_radius > 0:
-            # Pad the layer first: a blur can't spread past the layer's
-            # edges, so a shadow that fills its layer gets a hard edge.
-            # 3 radii hold almost all of the blur. Past the canvas size the
-            # soft edge is off-canvas, and a big radius would make a huge layer.
-            pad = min(math.ceil(blur_radius * 3) + 1,
-                      max(image.get_width(), image.get_height()))
-            # Stay within GIMP's maximum layer size on each axis.
-            width, height = shadow_layer.get_width(), shadow_layer.get_height()
-            pad_x = max(0, min(pad, (Gimp.MAX_IMAGE_SIZE - width) // 2))
-            pad_y = max(0, min(pad, (Gimp.MAX_IMAGE_SIZE - height) // 2))
+            # An enabled mask copied from the source would be black in the
+            # padding below and hide the blur there, so make it part of the
+            # shadow's alpha first. A disabled mask doesn't show and can stay.
+            if shadow_layer.get_mask() is not None and shadow_layer.get_apply_mask():
+                self._check_ok(shadow_layer.remove_mask(Gimp.MaskApplyMode.APPLY),
+                               "Applying the shadow layer's mask")
             if not shadow_layer.has_alpha():
                 shadow_layer.add_alpha()
-            if pad_x or pad_y:
+            # Pad the layer first: a blur can't spread past the layer's
+            # edges, so a shadow that fills its layer gets a hard edge.
+            # 3 radii hold almost all of the blur. Each side is padded only up
+            # to the canvas edge, since the soft edge isn't visible past it,
+            # and a big radius would otherwise make a huge layer.
+            pad = math.ceil(blur_radius * 3) + 1
+            offs = shadow_layer.get_offsets()
+            x, y = offs.offset_x, offs.offset_y
+            width, height = shadow_layer.get_width(), shadow_layer.get_height()
+            left = min(pad, max(0, x))
+            right = min(pad, max(0, image.get_width() - (x + width)))
+            top = min(pad, max(0, y))
+            bottom = min(pad, max(0, image.get_height() - (y + height)))
+            # Stay within GIMP's maximum layer size.
+            left = min(left, max(0, Gimp.MAX_IMAGE_SIZE - width))
+            right = min(right, max(0, Gimp.MAX_IMAGE_SIZE - width - left))
+            top = min(top, max(0, Gimp.MAX_IMAGE_SIZE - height))
+            bottom = min(bottom, max(0, Gimp.MAX_IMAGE_SIZE - height - top))
+            if left or right or top or bottom:
                 # Gimp.Layer.resize explicitly: a copied text layer's own
                 # resize() is the 2-argument text-box resize.
-                self._check_ok(Gimp.Layer.resize(shadow_layer, width + 2 * pad_x,
-                                                 height + 2 * pad_y, pad_x, pad_y),
+                self._check_ok(Gimp.Layer.resize(shadow_layer, width + left + right,
+                                                 height + top + bottom, left, top),
                                "Padding the shadow layer")
             size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
             blur_proc = Gimp.get_pdb().lookup_procedure("plug-in-gauss")

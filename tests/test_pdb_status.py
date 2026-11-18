@@ -358,7 +358,7 @@ def install_gi_stub():
 
             @staticmethod
             def resize(layer, width, height, offx, offy):
-                CALLS.append(("layer", "resize", width, height, offx, offy))
+                CALLS.append(("layer", "resize", layer, width, height, offx, offy))
                 return True
 
         class LayerMode:
@@ -539,9 +539,15 @@ def main():
     # the GEGL fallback when plug-in-gauss is missing, and report an error
     # when the plug-in runs and fails.
     real_resolve = plugin._resolve_layer
+    # A 10x10 shadow at (30, 30) on the fake 100x100 canvas.
+    shadow_at = {"x": 30, "y": 30}
     shadow = types.SimpleNamespace(set_lock_alpha=lambda v: None,
+                                   set_lock_content=lambda v: None,
+                                   set_lock_position=lambda v: None,
+                                   get_mask=lambda: None,
                                    set_opacity=lambda v: None,
-                                   get_offsets=lambda: types.SimpleNamespace(offset_x=0, offset_y=0),
+                                   get_offsets=lambda: types.SimpleNamespace(offset_x=shadow_at["x"],
+                                                                             offset_y=shadow_at["y"]),
                                    set_offsets=lambda *a: None,
                                    set_name=lambda n: None,
                                    has_alpha=lambda: True,
@@ -556,12 +562,22 @@ def main():
           and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur"
                   and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5} for c in CALLS)
           else f"got {r}, calls {CALLS}")
-    # The layer is padded by 3 radii before the blur, so the blur isn't cut off.
-    resize = ("layer", "resize", 10 + 2 * 24, 10 + 2 * 24, 24, 24)
+    # The shadow copy is padded by 3 radii before the blur, so the blur isn't cut off.
+    resize = ("layer", "resize", shadow, 10 + 2 * 24, 10 + 2 * 24, 24, 24)
     blur = next((i for i, c in enumerate(CALLS) if c[0] == "gegl"), None)
     check("apply_drop_shadow pads the shadow layer before blurring",
           None if resize in CALLS and blur is not None and CALLS.index(resize) < blur
           else f"calls {CALLS}")
+
+    # Each side is padded only up to the canvas edge: at (95, 0) the shadow
+    # gets no padding on the right or at the top.
+    shadow_at.update(x=95, y=0)
+    scenario({})
+    r = plugin._apply_drop_shadow({"blur_radius": 7.5})
+    shadow_at.update(x=30, y=30)
+    resize = ("layer", "resize", shadow, 10 + 24, 10 + 24, 24, 0)
+    check("apply_drop_shadow pads each side only up to the canvas edge",
+          None if r["status"] == "success" and resize in CALLS else f"got {r}, calls {CALLS}")
 
     scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
     r = plugin._apply_drop_shadow({})

@@ -371,13 +371,23 @@ chk('f_sharpen_raises_edge_contrast', _p is not None and _p[0] > 0xa0, _p)
 
 
 def layers():
-    """The image's layers, or None if list_layers failed."""
+    """The image's layers, or None if list_layers failed or couldn't read a layer."""
     _r = cmd('list_layers', {'image_index': 0})
-    return _r.get('results', {}).get('layers') if _r.get('status') == 'success' else None
+    _ls = _r.get('results', {}).get('layers') if _r.get('status') == 'success' else None
+    if _ls is None or any('name' not in lyr or 'id' not in lyr for lyr in _ls):
+        print(f"  list_layers failed: {_r.get('error') or _ls}", file=sys.stderr)
+        return None
+    return _ls
 
 
 def shadow_layer():
     return next((lyr for lyr in layers() or [] if lyr['name'] == 'Drop Shadow'), None)
+
+
+def gimp_exec(*lines):
+    """Run Python in the plug-in; return its printed output, or None on error."""
+    _r = cmd('exec', {'args': ['python-fu-exec', list(lines)]})
+    return ''.join(_r.get('results') or []).strip() if _r.get('status') == 'success' else None
 
 
 def shadow_alpha(shadow, x, y):
@@ -388,10 +398,14 @@ def shadow_alpha(shadow, x, y):
 
 
 # A shadow of an 80x80 box keeps the opacity asked for and has a soft edge.
+# The box's position is locked: the shadow copy must still move and be padded.
 canvas()
 t('ds_box_layer', cmd('create_layer', {'image_index': 0, 'name': 'Box'}))
 t('ds_box_fill', cmd('fill_rectangle', {'image_index': 0, 'layer_name': 'Box', 'x': 60, 'y': 60,
                                         'width': 80, 'height': 80, 'color': '#ff0000'}))
+chk('ds_box_lock', gimp_exec(
+    "_ds_box = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Box'][0]",
+    "print(_ds_box.set_lock_position(True))") == 'True')
 t('ds_set_foreground', cmd('set_colors', {'foreground': '#00ff00'}))
 t('ds_box', cmd('apply_drop_shadow', {'image_index': 0, 'layer_name': 'Box', 'offset_x': 8,
                                       'offset_y': 8, 'blur_radius': 4, 'opacity': 50}))
@@ -403,15 +417,34 @@ chk('ds_keeps_opacity', _s is not None and round(_s['opacity']) == 50, _s and _s
 # The shadow's left edge is at x = 60 + 8.
 _a = shadow_alpha(_s, 68, 100) if _s else None
 chk('ds_edge_is_soft', _a is not None and 0 < _a < 255, f'edge alpha={_a}')
+chk('ds_source_stays_locked', gimp_exec("print(_ds_box.get_lock_position())") == 'True')
 
-# A shadow of a layer that fills the canvas spreads past the layer's edge,
-# which needs the shadow layer to be padded.
+# A shadow of a layer that fills the canvas, moved by (20, 20), spreads past
+# the layer's left edge at x = 20, which needs the shadow layer to be padded.
 canvas()
-t('ds_full', cmd('apply_drop_shadow', {'image_index': 0, 'offset_x': 0, 'offset_y': 0,
+t('ds_full', cmd('apply_drop_shadow', {'image_index': 0, 'offset_x': 20, 'offset_y': 20,
                                        'blur_radius': 4, 'opacity': 100}))
 _s = shadow_layer()
-_a = shadow_alpha(_s, -3, 100) if _s else None
+_a = shadow_alpha(_s, 17, 100) if _s else None
 chk('ds_spreads_past_layer_edge', _a is not None and _a > 0, {'layer': _s, 'alpha': _a})
+
+# The same for a layer with a white mask: the mask copied into the shadow
+# must not hide the padding.
+canvas()
+t('ds_masked_layer', cmd('create_layer', {'image_index': 0, 'name': 'Masked', 'fill': '#ff0000'}))
+chk('ds_add_mask', gimp_exec(
+    "_ds_m = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Masked'][0]",
+    "print(_ds_m.add_mask(_ds_m.create_mask(Gimp.AddMaskType.WHITE)))") == 'True')
+t('ds_masked', cmd('apply_drop_shadow', {'image_index': 0, 'layer_name': 'Masked', 'offset_x': 20,
+                                         'offset_y': 20, 'blur_radius': 4, 'opacity': 100}))
+# The alpha that shows: the layer's alpha times its mask, if it has one.
+_shown = gimp_exec(
+    "_ds_s = [l for l in Gimp.get_images()[0].get_layers() if l.get_name() == 'Drop Shadow'][0]",
+    "_ds_x, _ds_y = 17 - _ds_s.get_offsets().offset_x, 100 - _ds_s.get_offsets().offset_y",
+    "_ds_k = _ds_s.get_mask()",
+    "print(_ds_s.get_pixel(_ds_x, _ds_y).get_rgba().alpha"
+    " * (_ds_k.get_pixel(_ds_x, _ds_y).get_rgba().red if _ds_k else 1.0))")
+chk('ds_masked_spreads_past_layer_edge', _shown is not None and float(_shown) > 0, _shown)
 
 # Bad arguments fail before the shadow layer is added, so the layer stack is
 # unchanged. (tests/test_pdb_status.py covers a blur that fails after it.)

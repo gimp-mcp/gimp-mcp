@@ -32,8 +32,10 @@ right command when the versions differ.
 - `fill="none"` is transparent, like `fill="transparent"`, in `new_canvas`, `create_layer`
   and `resize_canvas`. `resize_canvas` used to flatten the image for it.
 - `apply_drop_shadow` gives a shadow that reaches its layer's edge a soft edge there
-  too. The blur used to be cut off at the layer's edge, e.g. for a layer that fills the canvas.
-  Based on #62 by @gr8monk3ys.
+  too, also for a layer with a mask. The blur used to be cut off at the layer's edge, e.g.
+  for a layer that fills the canvas. Based on #62 by @gr8monk3ys.
+- `apply_drop_shadow` moves the shadow of a layer whose position is locked to its offset.
+  The shadow used to stay under the layer.
 - `apply_drop_shadow` rejects a `blur_radius` outside 0-1500 and an `opacity` outside
   0-100. A failed drop shadow no longer leaves an extra layer in the image, and the
   foreground color is no longer changed to the shadow color.
