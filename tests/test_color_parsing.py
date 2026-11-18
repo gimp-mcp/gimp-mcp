@@ -123,11 +123,19 @@ def main():
     expect_error([1, 2], "got 2")
     expect_error(None, "expected a string")
 
-    # _color hands Gegl the hex string, and passes Gegl colors through.
+    # _color hands Gegl the hex string, passes Gegl colors through, and
+    # rejects other values instead of handing them to GIMP.
     p = plugin.MCPPlugin()
     check("_color builds from hex", p._color("orange") == ("color", "#ffa500"), p._color("orange"))
-    marker = object()
-    check("_color passes non-strings through", p._color(marker) is marker)
+    gegl_color = sys.modules["gi.repository"].Gegl.Color()
+    check("_color passes Gegl colors through", p._color(gegl_color) is gegl_color)
+    for bad in (5, False, object()):
+        try:
+            got = p._color(bad)
+        except TypeError:
+            check(f"_color rejects {bad!r}", True)
+        else:
+            check(f"_color rejects {bad!r}", False, f"returned {got!r}")
 
     # A tool given a bad color returns an error before it starts painting.
     started = []
@@ -155,12 +163,15 @@ def main():
         ("_draw_rectangle", {"color": "", **rect}),
         ("_draw_ellipse", {"color": "", **rect}),
         ("_gradient_fill", {"color1": "nope", "color2": "white"}),
+        ("_gradient_fill", {"color1": "orange", "color2": "nope"}),
         ("_add_text", {"text": "hi", "color": "nope"}),
     ]:
         started.clear()
         r = getattr(p, tool)({"image_index": 0, **params})
-        name = f"{tool} color={params.get('color', params.get('color1'))!r}"
-        check(f"{name} rejected", "Unknown color" in r.get("error", ""), r)
+        colors = {k: v for k, v in params.items() if k.startswith("color")}
+        name = f"{tool} {colors}"
+        check(f"{name} rejected",
+              r.get("status") == "error" and "Unknown color" in r.get("error", ""), r)
         check(f"{name} opened no undo group", not started, len(started))
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll color parsing tests passed")

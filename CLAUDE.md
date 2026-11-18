@@ -93,7 +93,8 @@ The main interface is the `call_api` tool with parameters:
   percentages (`rgb(50%,50%,50%)`) work too, for all three values or none. Alpha is read
   as 0-1 when it is at most 1, else as 0-255, or as a percentage. Anything else
   (unknown names, hex without `#`, `hsl()`, `cmyk()`, the wrong number of values)
-  returns an error and paints nothing.
+  returns an error and paints nothing, when the tool uses the color: `fill_selection`
+  with `fill_type` `background`, `pattern` or `transparent` ignores `color`.
   - Alpha: fills that paint with the foreground color (`fill_rectangle`, `fill_ellipse`,
     ...) ignore the color's alpha and paint fully opaque. Use a layer's opacity for
     translucency.

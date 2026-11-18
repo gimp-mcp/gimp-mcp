@@ -389,7 +389,9 @@ def install_gi_stub():
 
     repository.Gimp, repository.GLib, repository.GObject = Gimp, GLib, GObject
     repository.Gio = Gio
-    repository.Gegl = types.SimpleNamespace(Color=types.SimpleNamespace(new=lambda s: s))
+    # Gegl.Color is a class, as in GIMP: the plugin checks isinstance(x, Gegl.Color).
+    repository.Gegl = types.SimpleNamespace(
+        Color=type("Color", (), {"new": staticmethod(lambda s: s)}))
     gi.repository = repository
     sys.modules["gi"] = gi
     sys.modules["gi.repository"] = repository

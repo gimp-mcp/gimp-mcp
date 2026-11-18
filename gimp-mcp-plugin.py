@@ -511,12 +511,12 @@ class MCPPlugin(Gimp.PlugIn):
     def _color(self, spec):
         """Build a Gegl.Color from a color spec; see color_to_hex for the formats.
 
-        Raises ValueError for a color it can't read. A Gegl.Color (anything that
-        isn't a str, list or tuple) is returned unchanged.
+        Raises ValueError for a color it can't read, and TypeError for a value
+        that isn't a string, list or tuple. A Gegl.Color is returned unchanged.
         """
-        if not isinstance(spec, (str, list, tuple)):
-            return spec
         from gi.repository import Gegl
+        if isinstance(spec, Gegl.Color):
+            return spec
         return Gegl.Color.new(color_to_hex(spec))
 
     def shutdown_server(self, signum=None, frame=None):
@@ -3914,8 +3914,8 @@ class MCPPlugin(Gimp.PlugIn):
             )
         return fields
 
-    def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
-        """Create a text layer via Gimp.TextLayer.new."""
+    def _create_text_layer_native(self, image, text, font_obj, size, x, y, color):
+        """Create a text layer via Gimp.TextLayer.new; color is a Gegl.Color."""
         if not hasattr(Gimp, "TextLayer"):
             return None
 
@@ -3944,7 +3944,7 @@ class MCPPlugin(Gimp.PlugIn):
             if cproc:
                 ccfg = cproc.create_config()
                 ccfg.set_property("layer", tl)
-                ccfg.set_property("color", self._color(color_str))
+                ccfg.set_property("color", color)
                 cproc.run(ccfg)
         except Exception:
             pass
@@ -4006,7 +4006,7 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 Gimp.context_set_foreground(fg)
                 text_layer = self._create_text_layer_native(
-                    image, text_str, font_obj, size, x, y, color_str)
+                    image, text_str, font_obj, size, x, y, fg)
                 if text_layer is None:
                     self._create_text_layer_pdb(
                         image, text_str, font_obj, size, x, y)
