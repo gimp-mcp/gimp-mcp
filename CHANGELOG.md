@@ -56,9 +56,11 @@ right command when the versions differ.
   symlinked folder, gets a `_web` suffix. Based on #62 by @gr8monk3ys.
 - `rotate_image` with an angle that isn't a multiple of 90 works. It used to fail, asking
   for a GIMP procedure that 3.2 doesn't have. It turns every layer, channel and path and
-  the selection clockwise about the image centre and grows the canvas to fit; the layers
-  are kept, not flattened, and the uncovered corners are transparent. Any multiple of 90,
-  such as -180 or 450, uses the lossless rotation. Based on #63 by @yonggandewo12.
+  the selection clockwise about the image centre and resizes the canvas to fit; the layers
+  are kept, not flattened, and the uncovered corners are transparent. A layer, channel or
+  path with locked contents or position is an error, and the image is left unchanged.
+  Any multiple of 90, such as -180 or 450, uses the lossless rotation. Based on #63 by
+  @yonggandewo12.
 - `convert_color_mode` converts to `INDEXED`. It used to fail with an error about
   `NO_DITHER`. `num_colors` must be 1-256, and an image with layer groups gets an error
   asking to merge them first, as GIMP won't index those from a script. A conversion GIMP

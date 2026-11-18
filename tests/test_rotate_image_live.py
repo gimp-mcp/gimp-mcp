@@ -9,9 +9,21 @@ which GIMP 3.2 doesn't have. Checks that a 30-degree rotation:
   and the selection about the image centre, rotating a layer group's children
   with it;
 - rotates the whole layer, not just the selected pixels, leaves no floating
-  selection or extra channel.
+  selection or extra channel;
+- keeps the selected layers and path, so a later draw_rectangle strokes, and
+  turns the selection mask exactly: the context's feather (set for every
+  rotation here) must not reach it.
 And that multiples of 90 (including negative and > 360) still rotate
 losslessly, 0 changes nothing, and a non-finite angle is rejected.
+
+On a second image, rotated 80 degrees (narrower than it was, so the canvas
+shrinks in one direction) with GIMP's transform direction set to backward:
+- a selection and a channel at the left edge survive and turn clockwise;
+- a layer with locked position inside a group is refused, with the image
+  unchanged;
+- a rotation that fails part way (a layer or the selection mask, stubbed)
+  restores the selection exactly, keeps the selected layer and leaves no
+  extra channel.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). Exits 0 on pass, 1 on fail.
@@ -72,7 +84,27 @@ def image_index():
 
 
 def rotate(angle):
-    return cmd('rotate_image', {'angle': angle, 'image_index': image_index()})
+    """Rotate the test image with a context feather set, which must not reach the selection."""
+    py("_rot_feather = (Gimp.context_get_feather(), Gimp.context_get_feather_radius()[1:])",
+       "Gimp.context_set_feather(True)",
+       "Gimp.context_set_feather_radius(20, 20)")
+    try:
+        return cmd('rotate_image', {'angle': angle, 'image_index': image_index()})
+    finally:
+        py("Gimp.context_set_feather(_rot_feather[0])",
+           "Gimp.context_set_feather_radius(*_rot_feather[1])")
+
+
+def selected():
+    """Return the names of the test image's selected layers and paths."""
+    return json.loads(py("print(json.dumps([[l.get_name() for l in _rot_img.get_selected_layers()],"
+                         " [p.get_name() for p in _rot_img.get_selected_paths()]]))"))
+
+
+def mask_row(y, x1, x2):
+    """Return the selection mask's values on row y, from x1 up to x2, rounded."""
+    return json.loads(py(f"print(json.dumps([round(_rot_img.get_selection().get_pixel(x, {y})"
+                         f".get_rgba()[0], 3) for x in range({x1}, {x2})]))"))
 
 
 def size():
@@ -104,6 +136,104 @@ def rotated(x, y, angle, w, h):
 def near(a, b, tol=2.0):
     return all(abs(p - q) <= tol for p, q in zip(a, b))
 
+
+def selection_bounds():
+    """Return (non_empty, x1, y1, x2, y2) of the test image's selection."""
+    return json.loads(py("_b = Gimp.Selection.bounds(_rot_img)",
+                         "print(json.dumps([_b[1], _b[2], _b[3], _b[4], _b[5]]))"))
+
+
+def second_image():
+    """80 degrees: one canvas side shrinks. Also locks and a failed rotation."""
+    W, H = 200, 100
+    py("_rot_img.delete()",
+       f"_rot_img = Gimp.Image.new({W}, {H}, Gimp.ImageBaseType.RGB)",
+       f"_l = Gimp.Layer.new(_rot_img, 'bg', {W}, {H}, Gimp.ImageType.RGB_IMAGE,"
+       " 100, Gimp.LayerMode.NORMAL)",
+       "_rot_img.insert_layer(_l, None, 0)",
+       "_l.fill(Gimp.FillType.WHITE)",
+       "_c = Gimp.Channel.new(_rot_img, 'mask', 200, 100, 50.0, Gegl.Color.new('#00ff00'))",
+       "_rot_img.insert_channel(_c, None, 0)",
+       # A 20x20 square at (0, 40), centre (10, 50), in the channel and the selection.
+       "_rot_img.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 40, 20, 20)",
+       "Gimp.Drawable.edit_fill(_c, Gimp.FillType.WHITE)",
+       "Gimp.context_set_transform_direction(Gimp.TransformDirection.BACKWARD)")
+
+    r = rotate(80)
+    check(r.get('status') == 'success', "rotate_image(80) failed", r)
+    rad = math.radians(80)
+    new_w = math.ceil(W * abs(math.cos(rad)) + H * abs(math.sin(rad)) - 1e-6)
+    new_h = math.ceil(W * abs(math.sin(rad)) + H * abs(math.cos(rad)) - 1e-6)
+    check(size() == [new_w, new_h], f"expected a {new_w}x{new_h} canvas", size())
+    want = rotated(10, 50, 80, W, H)
+    b = selection_bounds()
+    check(b[0], "the selection at the left edge was lost")
+    check(near(((b[1] + b[3]) / 2, (b[2] + b[4]) / 2), want),
+          "the selection did not turn clockwise about the centre", f"{b}, want centre {want}")
+    st = state()
+    check(st['channels'] == ['mask'], "a channel was lost or left behind", st)
+    b = json.loads(py("_rot_img.select_item(Gimp.ChannelOps.REPLACE, _c)",
+                      "_b = Gimp.Selection.bounds(_rot_img)",
+                      "print(json.dumps([_b[1], _b[2], _b[3], _b[4], _b[5]]))"))
+    check(b[0] and near(((b[1] + b[3]) / 2, (b[2] + b[4]) / 2), want),
+          "the channel's content was lost or misplaced", f"{b}, want centre {want}")
+    print("PASS: 80 degrees keeps a selection and a channel at the edge, clockwise "
+          "despite a backward transform direction")
+
+    # A locked layer inside a group: refused before anything changes.
+    py("_g = Gimp.GroupLayer.new(_rot_img, 'grp')",
+       "_rot_img.insert_layer(_g, None, 0)",
+       "_k = Gimp.Layer.new(_rot_img, 'locked', 10, 10, Gimp.ImageType.RGBA_IMAGE,"
+       " 100, Gimp.LayerMode.NORMAL)",
+       "_rot_img.insert_layer(_k, _g, 0)",
+       "_k.set_lock_position(True)",
+       "_rot_img.select_rectangle(Gimp.ChannelOps.REPLACE, 5, 5, 10, 10)",
+       "_rot_img.clean_all()")
+    before = (size(), state(), selection_bounds())
+    r = rotate(30)
+    check(r.get('status') == 'error' and "'locked' has its position and size locked"
+          in r.get('error', ''), "a locked layer did not refuse the rotation", r)
+    check((size(), state(), selection_bounds()) == before,
+          "the refused rotation changed the image", (size(), state(), selection_bounds()))
+    check(py("print(_rot_img.is_dirty())") == "False", "the refused rotation dirtied the image")
+    py("_k.set_lock_position(False)")
+    print("PASS: a locked layer in a group is refused, the image unchanged")
+
+    # A rotation that fails part way restores the selection exactly (shifted by
+    # the grown canvas), keeps the selected layer and drops the saved channel:
+    # whether a layer fails to turn, or the selection mask itself.
+    py("_rot_img.set_selected_layers([_l])")
+    stubs = (('Gimp.Layer', "None if self.get_name() == 'bg' else _rot_orig_tr(self, *a)",
+              "Rotating 'bg'"),
+             ('Gimp.Selection', "None", "Rotating the selection"))
+    for cls, stub, error in stubs:
+        sel_before = selected()
+        size_before = size()
+        b_before = selection_bounds()
+        row_before = mask_row(b_before[2] + 5, b_before[1] - 3, b_before[3] + 3)
+        py(f"_rot_stub_cls = {cls}",
+           "_rot_orig_tr = _rot_stub_cls.transform_rotate",
+           f"_rot_stub_cls.transform_rotate = lambda self, *a: {stub}")
+        try:
+            r = rotate(30)
+        finally:
+            py("_rot_stub_cls.transform_rotate = _rot_orig_tr")
+        check(r.get('status') == 'error' and error in r.get('error', ''),
+              f"the stubbed {cls} failure did not fail the rotation", r)
+        dx, dy = [(a - b) // 2 for a, b in zip(size(), size_before)]
+        b = selection_bounds()
+        check(b == [True, b_before[1] + dx, b_before[2] + dy, b_before[3] + dx, b_before[4] + dy],
+              f"the failed rotation ({cls}) did not restore the selection",
+              f"{b}, was {b_before} + {(dx, dy)}")
+        row = mask_row(b_before[2] + 5 + dy, b_before[1] - 3 + dx, b_before[3] + 3 + dx)
+        check(row == row_before, f"the failed rotation ({cls}) changed the selection mask",
+              (row, row_before))
+        check(selected() == sel_before, f"the failed rotation ({cls}) changed the selected layer",
+              (selected(), sel_before))
+        check(state()['channels'] == ['mask'],
+              f"the failed rotation ({cls}) left a channel behind", state())
+    print("PASS: a failed rotation (of a layer or of the selection) restores the selection "
+          "exactly, keeps the selected layer and leaves no extra channel")
 
 def main():
     made_image = False
@@ -154,6 +284,10 @@ def main():
         print("PASS: 0 and 360 change nothing")
 
         # 30 degrees: the canvas grows to the rotated bounding box.
+        py("_rot_img.set_selected_layers([next(l for l in _rot_img.get_layers()"
+           " if l.get_name() == 'red')])")
+        sel_before = selected()
+        check(sel_before == [['red'], ['path']], "setup: wrong selected layer or path", sel_before)
         r = rotate(30)
         check(r.get('status') == 'success', "rotate_image(30) failed", r)
         new_w = math.ceil(W * math.cos(math.radians(30)) + H * 0.5 - 1e-6)
@@ -190,7 +324,18 @@ def main():
         check(b[0], "the selection was lost")
         check(near(((b[1] + b[3]) / 2, (b[2] + b[4]) / 2), rotated(10, 10, 30, W, H)),
               "the selection was not rotated", b)
+        # A 20x20 square turned 30 degrees spans 10 * (cos 30 + sin 30) either side of
+        # its centre; a feathered one would reach about 10 px further, with a soft centre.
+        half = 10 * (math.cos(math.radians(30)) + 0.5)
+        sx, sy = rotated(10, 10, 30, W, H)
+        check(near(b[1:], (sx - half, sy - half, sx + half, sy + half)),
+              "the selection's extent changed (feathered?)", f"{b}, centre {(sx, sy)}")
+        row = mask_row(int(sy), b[1], b[3])
+        check(max(row) == 1.0 and len(set(row)) <= 6,
+              "the rotated selection is not crisp (feathered?)", row)
         print("PASS: layers, a group's child, the path and the selection turn clockwise")
+        check(selected() == sel_before, "the selected layer or path changed", selected())
+        print("PASS: the selected layer and path are kept, and the selection is not feathered")
 
         # The background layer turned as a whole: its old centre is still white and
         # opaque, the canvas corner is transparent.
@@ -203,20 +348,38 @@ def main():
         check(px[1][3] == 0.0, "the canvas corner is not transparent", px[1])
         print("PASS: the whole layer turned; the corners are transparent")
 
+        # A stroke right after the rotation needs a selected layer.
+        r = cmd('draw_rectangle', {'image_index': image_index(), 'x': 1, 'y': 1,
+                                   'width': 10, 'height': 10, 'color': '#000000'})
+        check(r.get('status') == 'success', "draw_rectangle after the rotation failed", r)
+        print("PASS: draw_rectangle works after the rotation")
+
         # Multiples of 90 rotate losslessly, whatever their sign.
-        for angle, want in ((-90, [new_h, new_w]), (450, [new_w, new_h]), (-180, [new_w, new_h])):
+        for angle, want in ((-90, [new_h, new_w]), (90, [new_w, new_h]), (450, [new_h, new_w]),
+                            (-180, [new_h, new_w])):
             r = rotate(angle)
             check(r.get('status') == 'success', f"rotate_image({angle}) failed", r)
             check(size() == want, f"rotate_image({angle}) gave the wrong size", size())
-        print("PASS: -90, 450 and -180 rotate by right angles")
+            res = r.get('results', {})
+            check([res.get('width'), res.get('height')] == want,
+                  f"rotate_image({angle}) reported the wrong size", res)
+        print("PASS: -90, 90, 450 and -180 rotate by right angles")
 
         for bad in ('nan', 'inf'):
             r = rotate(float(bad))
             check(r.get('status') == 'error' and 'finite' in r.get('error', ''),
                   f"angle {bad} was not rejected", r)
         print("PASS: non-finite angles are rejected")
+
+        second_image()
         return 0
     finally:
+        try:
+            py("Gimp.context_set_transform_direction(Gimp.TransformDirection.FORWARD)",
+               "if '_rot_orig_tr' in globals(): _rot_stub_cls.transform_rotate = _rot_orig_tr")
+        except (SystemExit, OSError):
+            print("  (cleanup) could not restore the transform direction or "
+                  "transform_rotate: restart the MCP server in GIMP", file=sys.stderr)
         if made_image:
             try:
                 py("_rot_img.delete()")

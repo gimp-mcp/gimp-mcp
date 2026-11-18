@@ -1443,8 +1443,10 @@ def rotate_image(
     - angle: Rotation in degrees, clockwise (negative = counter-clockwise).
              Multiples of 90 rotate losslessly. Other angles rotate every
              layer, channel, path and the selection about the image centre with
-             interpolation, and grow the canvas to fit; the uncovered corners
-             are transparent. Layers are kept (nothing is flattened).
+             interpolation, and resize the canvas to fit the rotated image; the
+             uncovered corners are transparent. Layers are kept (nothing is
+             flattened). A layer, channel or path with locked contents or
+             position is an error, and the image is left unchanged.
     - image_index: Target image index (default 0)
 
     Returns status dict with the angle and the new width and height.

@@ -3071,6 +3071,9 @@ class MCPPlugin(Gimp.PlugIn):
                 270.0: Gimp.RotationType.DEGREES270,
             }
             if turn != 0.0:
+                if turn not in rot_map:
+                    # Before the undo group: an empty one would mark the image dirty.
+                    self._check_rotatable(image)
                 image.undo_group_start()
                 try:
                     if turn in rot_map:
@@ -3090,46 +3093,135 @@ class MCPPlugin(Gimp.PlugIn):
     def _rotate_image_arbitrary(self, image, angle):
         """Rotate the whole image by a non-right angle, keeping its layers.
 
-        GIMP has no image-level arbitrary rotation, so: grow the canvas to the
-        rotated image's bounding box, then rotate every layer, channel and path
-        and the selection about the image centre. Layers get an alpha channel
-        so the uncovered corners are transparent.
+        GIMP has no image-level arbitrary rotation, so: enlarge the canvas to
+        hold both the image and its rotated bounding box, rotate every layer,
+        channel and path and the selection about the image centre, then trim
+        the canvas to the rotated bounding box. Layers get an alpha channel so
+        the uncovered corners are transparent.
+
+        Channels (and the selection) are always canvas-sized, so the canvas
+        must not shrink before they are rotated: that would cut them off.
 
         A drawable transform with an active selection rotates only the selected
-        pixels, into a floating selection. So the selection is saved to a
-        channel and cleared first, and restored from that channel at the end.
+        pixels, into a floating selection. So a copy of the selection mask is
+        kept and the selection cleared while the layers, channels and paths
+        turn; then the copy is put back and the selection mask itself rotated.
+        The copy is never added to the image: an added channel becomes the
+        selected item, and once removed it left no layer selected, so a later
+        stroke failed with "There is no selection to stroke". combine_masks()
+        puts the mask back exactly (select_item() would apply the context's
+        feather). If the rotation fails, the unrotated selection is put back.
+        The image's selected layers, channels and paths are reselected at the
+        end either way.
         """
+        items = list(image.get_layers()) + list(image.get_channels()) + list(image.get_paths())
         w, h = image.get_width(), image.get_height()
         rad = math.radians(angle)
         cos_a, sin_a = abs(math.cos(rad)), abs(math.sin(rad))
         new_w = max(1, math.ceil(w * cos_a + h * sin_a - 1e-6))
         new_h = max(1, math.ceil(w * sin_a + h * cos_a - 1e-6))
         off_x, off_y = (new_w - w) // 2, (new_h - h) // 2
-        cx, cy = off_x + w / 2.0, off_y + h / 2.0
+        # The working canvas holds the image and the rotated image.
+        big_w, big_h = max(w, new_w), max(h, new_h)
+        big_x, big_y = (big_w - w) // 2, (big_h - h) // 2
+        cx, cy = big_x + w / 2.0, big_y + h / 2.0
 
+        selected = (image.get_selected_layers(), image.get_selected_channels(),
+                    image.get_selected_paths())
         saved_sel = None
         if not Gimp.Selection.is_empty(image):
-            saved_sel = self._check_item(Gimp.Selection.save(image), "Saving the selection")
-            self._check_ok(Gimp.Selection.none(image), "Clearing the selection")
-
-        self._check_ok(image.resize(new_w, new_h, off_x, off_y), "Growing the canvas")
-        Gimp.context_push()
+            saved_sel = self._check_item(image.get_selection().copy(), "Copying the selection")
+        grown = sel_rotated = False
         try:
-            # Let rotated layers grow instead of clipping them to their old size.
-            Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
-            items = list(image.get_layers()) + list(image.get_channels()) + list(image.get_paths())
-            for item in items:
-                if isinstance(item, Gimp.Layer) and not item.has_alpha():
-                    self._check_ok(item.add_alpha(), f"Adding alpha to layer {item.get_name()!r}")
-                self._check_item(item.transform_rotate(rad, False, cx, cy),
-                                 f"Rotating {item.get_name()!r}")
+            if saved_sel is not None:
+                self._check_ok(Gimp.Selection.none(image), "Clearing the selection")
+            self._check_ok(image.resize(big_w, big_h, big_x, big_y), "Growing the canvas")
+            grown = True
+            Gimp.context_push()
+            try:
+                # Let rotated layers grow instead of clipping them to their old
+                # size, and turn clockwise whatever an earlier call_api set.
+                Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+                Gimp.context_set_transform_direction(Gimp.TransformDirection.FORWARD)
+                for item in items:
+                    if isinstance(item, Gimp.Layer) and not item.has_alpha():
+                        self._check_ok(item.add_alpha(), f"Adding alpha to layer {item.get_name()!r}")
+                    self._check_item(item.transform_rotate(rad, False, cx, cy),
+                                     f"Rotating {item.get_name()!r}")
+                if saved_sel is not None:
+                    # The mask is canvas-sized: put the copy back where the
+                    # grown canvas moved the image, then turn the mask itself
+                    # (GIMP transforms the mask rather than floating it).
+                    mask = image.get_selection()
+                    self._check_ok(mask.combine_masks(saved_sel, Gimp.ChannelOps.REPLACE, big_x, big_y),
+                                   "Restoring the selection")
+                    self._check_item(mask.transform_rotate(rad, False, cx, cy),
+                                     "Rotating the selection")
+                    sel_rotated = True
+            finally:
+                Gimp.context_pop()
+            if (big_w, big_h) != (new_w, new_h):
+                self._check_ok(image.resize(new_w, new_h, off_x - big_x, off_y - big_y),
+                               "Trimming the canvas")
+        except Exception:
+            # Best effort: the original error is the one to report.
+            if saved_sel is not None and not sel_rotated:
+                try:
+                    off = (big_x, big_y) if grown else (0, 0)
+                    image.get_selection().combine_masks(saved_sel, Gimp.ChannelOps.REPLACE, *off)
+                except Exception:
+                    pass
+            try:
+                self._reselect_items(image, *selected)
+            except Exception:
+                pass
+            raise
+        else:
+            self._reselect_items(image, *selected)
         finally:
-            Gimp.context_pop()
+            if saved_sel is not None:
+                saved_sel.delete()
 
-        if saved_sel is not None:
-            # The saved selection is in image.get_channels(), so it was rotated above.
-            self._check_ok(image.select_item(Gimp.ChannelOps.REPLACE, saved_sel), "Restoring the selection")
-            image.remove_channel(saved_sel)
+    def _reselect_items(self, image, layers, channels, paths):
+        """Select these layers, channels and paths again, where that changed.
+
+        GIMP refuses an empty list (it can't select nothing), so an empty one
+        is skipped. Selecting layers deselects the channels and vice versa,
+        so the channels go second.
+        """
+        def ids(items):
+            return [item.get_id() for item in items]
+
+        if layers and ids(image.get_selected_layers()) != ids(layers):
+            self._check_ok(image.set_selected_layers(layers), "Reselecting the layers")
+        if channels and ids(image.get_selected_channels()) != ids(channels):
+            self._check_ok(image.set_selected_channels(channels), "Reselecting the channels")
+        if paths and ids(image.get_selected_paths()) != ids(paths):
+            self._check_ok(image.set_selected_paths(paths), "Reselecting the paths")
+
+    def _check_rotatable(self, image):
+        """Raise if an item is locked against the arbitrary rotation.
+
+        GIMP refuses to transform an item with locked contents or position, or
+        a group with such a layer inside. Checking first means a lock can't
+        leave the image half rotated.
+        """
+        items = (list(self._walk_layers(image.get_layers()))
+                 + list(image.get_channels()) + list(image.get_paths()))
+        for item in items:
+            if item.get_lock_content() or item.get_lock_position():
+                raise RuntimeError(
+                    f"Cannot rotate the image: {item.get_name()!r} has its "
+                    f"{'contents' if item.get_lock_content() else 'position and size'} "
+                    f"locked. Unlock it first.")
+
+    @staticmethod
+    def _walk_layers(layers):
+        """Yield each layer, and each group's layers after the group, depth first."""
+        for layer in layers:
+            yield layer
+            if layer.is_group_layer():
+                yield from MCPPlugin._walk_layers(layer.get_children())
 
     def _flip_image(self, params):
         """Flip image horizontally or vertically."""
