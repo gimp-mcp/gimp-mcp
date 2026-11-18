@@ -5066,30 +5066,48 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             mode        = params.get("mode", "RGB").upper()
             num_colors  = int(params.get("num_colors", 256))
+            if mode not in ("RGB", "RGBA", "GRAY", "GRAYA", "INDEXED"):
+                return {"status": "error",
+                        "error": f"Unknown mode: {mode}. Use RGB, RGBA, GRAY, GRAYA or INDEXED"}
+            if mode == "INDEXED" and not 1 <= num_colors <= 256:
+                return {"status": "error",
+                        "error": f"num_colors must be between 1 and 256, got {num_colors}"}
             image = self._get_image(image_index)
+            target = {
+                "RGB": Gimp.ImageBaseType.RGB, "RGBA": Gimp.ImageBaseType.RGB,
+                "GRAY": Gimp.ImageBaseType.GRAY, "GRAYA": Gimp.ImageBaseType.GRAY,
+                "INDEXED": Gimp.ImageBaseType.INDEXED,
+            }[mode]
+            # GIMP refuses (returns False) to convert an image to the mode it
+            # already has; that's a no-op here, not an error.
+            convert = image.get_base_type() != target
+            no_alpha = [layer for layer in image.get_layers()
+                        if mode in ("RGBA", "GRAYA") and not layer.has_alpha()]
+            if convert and mode == "INDEXED" and any(
+                    layer.is_group_layer() for layer in image.get_layers()):
+                # gimp-image-convert-indexed refuses layer groups with a bare
+                # "execution error" (GIMP's own menu command doesn't).
+                return {"status": "error",
+                        "error": "GIMP can't convert an image with layer groups to INDEXED "
+                                 "from a script. Merge the groups or flatten the image first."}
+            if not convert and not no_alpha:
+                # Nothing to do; an empty undo group would still mark the image dirty.
+                return {"status": "success", "results": {"status": "success", "mode": mode}}
             image.undo_group_start()
             try:
-                if mode in ("RGB", "RGBA"):
-                    image.convert_rgb()
-                    if mode == "RGBA":
-                        # Add alpha channel to all layers
-                        for layer in image.get_layers():
-                            if not layer.has_alpha():
-                                layer.add_alpha()
-                elif mode in ("GRAY", "GRAYA"):
-                    image.convert_grayscale()
-                    if mode == "GRAYA":
-                        for layer in image.get_layers():
-                            if not layer.has_alpha():
-                                layer.add_alpha()
-                elif mode == "INDEXED":
-                    image.convert_indexed(
-                        Gimp.ConvertDitherType.NO_DITHER,
+                if convert and target == Gimp.ImageBaseType.RGB:
+                    self._check_ok(image.convert_rgb(), "Converting to RGB")
+                elif convert and target == Gimp.ImageBaseType.GRAY:
+                    self._check_ok(image.convert_grayscale(), "Converting to grayscale")
+                elif convert:
+                    self._check_ok(image.convert_indexed(
+                        Gimp.ConvertDitherType.NONE,
                         Gimp.ConvertPaletteType.GENERATE,
                         num_colors, False, False, ""
-                    )
-                else:
-                    return {"status": "error", "error": f"Unknown mode: {mode}"}
+                    ), "Converting to indexed")
+                for layer in no_alpha:
+                    self._check_ok(layer.add_alpha(),
+                                   f"Adding alpha to layer {layer.get_name()!r}")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()

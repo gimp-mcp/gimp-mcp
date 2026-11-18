@@ -59,6 +59,12 @@ right command when the versions differ.
   the selection clockwise about the image centre and grows the canvas to fit; the layers
   are kept, not flattened, and the uncovered corners are transparent. Any multiple of 90,
   such as -180 or 450, uses the lossless rotation. Based on #63 by @yonggandewo12.
+- `convert_color_mode` converts to `INDEXED`. It used to fail with an error about
+  `NO_DITHER`. `num_colors` must be 1-256, and an image with layer groups gets an error
+  asking to merge them first, as GIMP won't index those from a script. A conversion GIMP
+  refuses is reported as an error. Converting an image to the mode it already has
+  doesn't mark it as changed; `RGBA` and `GRAYA` then only add alpha. Based on #63 by
+  @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

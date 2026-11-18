@@ -3011,8 +3011,11 @@ def convert_color_mode(
     """Convert an image to a different color mode.
 
     Parameters:
-    - mode: "RGB", "GRAY", or "INDEXED"
-    - num_colors: Number of colors for INDEXED mode (default 256)
+    - mode: "RGB", "RGBA", "GRAY", "GRAYA", or "INDEXED". RGBA and GRAYA also
+            add an alpha channel to every layer. An image already in the
+            requested mode is left as it is.
+    - num_colors: Number of colors for INDEXED mode, 1-256 (default 256), no dithering.
+                  INDEXED needs an 8-bit image without layer groups.
     - image_index: Target image index (default 0)
 
     Returns status dict.
