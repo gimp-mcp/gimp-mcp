@@ -224,6 +224,15 @@ def main():
     fill_fg = f"edit_fill {gimp.FillType.FOREGROUND}"
     fill_bg = f"edit_fill {gimp.FillType.BACKGROUND}"
 
+    # An unknown fill_type is an error, not a silent color fill.
+    for bad_type in ("foregroud", "solid"):
+        ops.clear()
+        r = p._fill_selection({"image_index": 0, "fill_type": bad_type, "color": "red"})
+        check(f"_fill_selection fill_type={bad_type!r} rejected",
+              r.get("status") == "error" and "Unknown fill_type" in r.get("error", "")
+              and "'pattern'" in r.get("error", ""), r)
+        check(f"_fill_selection fill_type={bad_type!r} changed nothing", not ops, ops)
+
     parsed = []
     real_color = p._color
     p._color = lambda spec: parsed.append(spec) or real_color(spec)
