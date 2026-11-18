@@ -227,11 +227,13 @@ def main():
     # An unknown fill_type is an error, not a silent color fill.
     for bad_type in ("foregroud", "solid"):
         ops.clear()
+        started.clear()
         r = p._fill_selection({"image_index": 0, "fill_type": bad_type, "color": "red"})
         check(f"_fill_selection fill_type={bad_type!r} rejected",
               r.get("status") == "error" and "Unknown fill_type" in r.get("error", "")
               and "'pattern'" in r.get("error", ""), r)
         check(f"_fill_selection fill_type={bad_type!r} changed nothing", not ops, ops)
+        check(f"_fill_selection fill_type={bad_type!r} opened no undo group", not started, len(started))
 
     parsed = []
     real_color = p._color
