@@ -2353,7 +2353,8 @@ class MCPPlugin(Gimp.PlugIn):
                 # pass this pspec to libgimp; then skip the check rather than
                 # fail the filter.
                 choice = None
-                if pspec.__gtype__.name == "GimpParamChoice":
+                gtype = getattr(pspec, "__gtype__", None)
+                if gtype is not None and gtype.name == "GimpParamChoice":
                     try:
                         choice = Gimp.param_spec_choice_get_choice(pspec)
                     except (TypeError, AttributeError):
@@ -4363,7 +4364,8 @@ class MCPPlugin(Gimp.PlugIn):
         # 3. Set opacity and offset
         shadow_layer.set_opacity(opacity)
         offs = shadow_layer.get_offsets()
-        shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
+        self._check_ok(shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y),
+                       "Moving the shadow layer")
 
         # 4. Blur the shadow layer. plug-in-gauss is missing from some
         # GIMP 3.2 builds, so fall back to a GEGL gaussian blur.

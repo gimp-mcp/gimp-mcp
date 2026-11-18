@@ -414,9 +414,12 @@ _fg = cmd('get_context_state', {}).get('results', {}).get('foreground_color', {}
 chk('ds_keeps_foreground', _fg is not None and [round(v, 3) for v in _fg] == [0.0, 1.0, 0.0, 1.0], _fg)
 _s = shadow_layer()
 chk('ds_keeps_opacity', _s is not None and round(_s['opacity']) == 50, _s and _s['opacity'])
-# The shadow's left edge is at x = 60 + 8.
+# The shadow's left edge is at x = 60 + 8. 4px left of it is mostly clear;
+# a shadow left at x = 60 would be mostly opaque there.
 _a = shadow_alpha(_s, 68, 100) if _s else None
 chk('ds_edge_is_soft', _a is not None and 0 < _a < 255, f'edge alpha={_a}')
+_a = shadow_alpha(_s, 64, 100) if _s else None
+chk('ds_moved_to_offset', _a is not None and _a < 128, f'alpha 4px outside the edge={_a}')
 chk('ds_source_stays_locked', gimp_exec("print(_ds_box.get_lock_position())") == 'True')
 
 # A shadow of a layer that fills the canvas, moved by (20, 20), spreads past
