@@ -2030,6 +2030,9 @@ def fill_layer(
 ) -> dict:
     """Fill an entire layer with a solid color.
 
+    Clears any active selection; use fill_selection to fill only the
+    selection.
+
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string
     - layer_name: Layer to fill; defaults to active layer

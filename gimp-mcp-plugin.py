@@ -3403,6 +3403,13 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             self._push_paint_context()
             try:
+                # Deliberately NOT saving/restoring a pre-existing selection:
+                # restoring via Gimp.Image.select_item and then deleting the
+                # saved channel corrupts the image's selection state when run
+                # from the socket worker thread on GIMP 3.2 (later strokes then
+                # fail with "There is no selection to stroke"). Whole-layer
+                # fills are the point of this tool; fill_selection handles
+                # fills bounded by a selection.
                 Gimp.Selection.all(image)
                 Gimp.context_set_foreground(fg)
                 self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
