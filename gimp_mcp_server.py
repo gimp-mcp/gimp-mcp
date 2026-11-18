@@ -1902,7 +1902,7 @@ def set_layer_properties(
     - blend_mode: NORMAL, MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE, BURN,
       HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY, or
       DISSOLVE. Names are case-insensitive and accept spaces or hyphens for underscores.
-      Omit to leave unchanged.
+      Omit or pass an empty string to leave unchanged.
     - visible: True/False visibility (omit to leave unchanged)
     - image_index: Target image index (default 0)
 

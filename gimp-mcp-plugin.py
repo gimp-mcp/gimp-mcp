@@ -3433,7 +3433,7 @@ class MCPPlugin(Gimp.PlugIn):
             opacity     = params.get("opacity", None)
             blend_mode  = params.get("blend_mode", None)
             visible     = params.get("visible", None)
-            mode = self._blend_mode_from_string(blend_mode) if blend_mode is not None else None
+            mode = self._blend_mode_from_string(blend_mode) if blend_mode not in (None, "") else None
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
@@ -3442,7 +3442,7 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 if opacity is not None:
                     layer.set_opacity(float(opacity))
-                if blend_mode is not None:
+                if mode is not None:
                     layer.set_mode(mode)
                 if visible is not None:
                     layer.set_visible(bool(visible))

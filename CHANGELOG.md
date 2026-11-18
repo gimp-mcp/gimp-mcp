@@ -32,6 +32,7 @@ right command when the versions differ.
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
   using Normal, and accept names like `hard light` and `hard-light` (#149).
+  An empty `blend_mode` leaves the mode unchanged in `set_layer_properties`.
 - Some color strings that used to paint now return an error. Use hex or
   `rgb(r, g, b)` instead:
   - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,

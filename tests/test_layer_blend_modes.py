@@ -51,6 +51,37 @@ class LayerBlendModeTests(unittest.TestCase):
         self.image.undo_group_start.assert_not_called()
         self.assertEqual(self.layer.mock_calls, [])
 
+    def test_create_layer_accepts_blend_mode_alias(self):
+        result = self.plugin._create_layer(
+            {"width": 32, "height": 24, "blend_mode": "hard-light"}
+        )
+        self.assertEqual(result["status"], "success", result)
+        self.layer_new.assert_called_once_with(
+            self.image, "New Layer", 32, 24, 0, 100.0, self.hard_light
+        )
+        self.image.insert_layer.assert_called_once_with(self.layer, None, -1)
+
+    def test_create_layer_rejects_empty_blend_mode_before_allocating_layer(self):
+        result = self.plugin._create_layer(
+            {"width": 32, "height": 32, "blend_mode": ""}
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Unknown blend_mode ''", result["error"])
+        self.layer_new.assert_not_called()
+        self.image.insert_layer.assert_not_called()
+
+    def test_set_layer_properties_leaves_omitted_blend_mode_unchanged(self):
+        for blend_mode in (None, ""):
+            with self.subTest(blend_mode=blend_mode):
+                self.layer.reset_mock()
+                result = self.plugin._set_layer_properties(
+                    {"blend_mode": blend_mode, "opacity": 20, "visible": False}
+                )
+                self.assertEqual(result["status"], "success", result)
+                self.layer.set_mode.assert_not_called()
+                self.layer.set_opacity.assert_called_once_with(20.0)
+                self.layer.set_visible.assert_called_once_with(False)
+
     def test_set_layer_properties_accepts_blend_mode_aliases(self):
         for name, mode in (
             ("multiply", self.multiply),
