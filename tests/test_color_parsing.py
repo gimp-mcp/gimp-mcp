@@ -131,6 +131,8 @@ def main():
     expect_error("rgb(255,0,0,)", "a value is empty")
     expect_error("rgb(,255,0,0)", "a value is empty")
     expect_error("rgb(255, 128 0)", "commas only")
+    expect_error("rgb(50\t%,0%,0%)", "commas only")  # whitespace inside a value
+    expect("rgb(\t50%,\n0%, 0% )", "#800000")  # whitespace around values is fine
     expect_error("rgba(255,0,0/0.5)", "commas only")
     expect_error("rgb(255 / 128 0 0.5)", "after the '/'")
     expect_error("rgb(255 128 0 / 0.5 1)", "after the '/'")

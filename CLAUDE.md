@@ -99,7 +99,9 @@ The main interface is the `call_api` tool with parameters:
   - Alpha: fills that paint with the foreground color (`fill_rectangle`, `fill_ellipse`,
     ...) ignore the color's alpha and paint fully opaque. Use a layer's opacity for
     translucency. So `transparent`/`none` give a transparent fill only as the `fill` of
-    `new_canvas`, `create_layer` and `resize_canvas`. Tools that paint with the color
+    `new_canvas` and `create_layer`; as `resize_canvas`'s `fill` they enlarge the canvas
+    without adding a background (nothing is flattened, and parts of layers that extend past
+    the old edge become visible). Tools that paint with the color
     (`fill_rectangle`, `fill_ellipse`, `fill_layer`, `draw_*`, `fill_selection`'s
     foreground fill) paint them as opaque black. To make the selected pixels transparent,
     use `fill_selection(fill_type="transparent")`; the selection stays active, and

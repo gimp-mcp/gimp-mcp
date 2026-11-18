@@ -264,7 +264,7 @@ def _split_rgb(inside, spec):
         if any(not p for p in parts):
             raise ValueError(f"Invalid color {spec!r}: a value is empty (check for a doubled "
                              f"or trailing comma)")
-        if any(" " in p or "/" in p for p in parts):
+        if any("/" in p or any(ch.isspace() for ch in p) for p in parts):
             raise ValueError(f"Invalid color {spec!r}: separate the values with commas only, "
                              f"as in rgb(255, 128, 0)")
         return parts
