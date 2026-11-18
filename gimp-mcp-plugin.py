@@ -603,6 +603,12 @@ class MCPPlugin(Gimp.PlugIn):
         except OSError as e:
             return (False, f"Could not start MCP server on {self.host}:{self.port}: {e}")
         self.running = True
+        # By default GIMP shows a message for every PDB call that fails in a
+        # plug-in. The tools check those failures themselves and return GIMP's
+        # reason (_run_pdb, _check_ok), and some calls are expected to fail, so
+        # those messages are duplicates or noise. The reason is still available
+        # from Gimp.get_pdb().get_last_error().
+        self.set_pdb_error_handler(Gimp.PDBErrorHandler.PLUGIN)
         print(f"GimpMCP server started on {self.host}:{self.port}")
         if announce:
             Gimp.message(f"MCP Server started on {self.host}:{self.port}")

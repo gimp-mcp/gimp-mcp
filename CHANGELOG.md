@@ -14,6 +14,11 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- A tool call that GIMP refuses no longer also shows an error message in GIMP. The tool
+  already returns GIMP's reason; the message duplicated it, and calls that are expected
+  to fail popped up messages too. In `call_api` code, a failed GIMP call returns False
+  or None without a message: check the result, and `Gimp.get_pdb().get_last_error()`
+  for the reason.
 - `edit_text` and `set_layer_properties` skip opening an undo group when no edits
   are requested. Invalid opacity and font size are rejected before opening an
   undo group, including font sizes above GIMP's 8192 limit (#148).

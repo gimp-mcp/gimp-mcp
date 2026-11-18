@@ -700,6 +700,9 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Build colors from hex, e.g. Gegl.Color.new("#ff8000"): Gegl reads rgb(...)/rgba(...) values as linear, so rgb(255, ...) clamps to white
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
+    - A GIMP call that fails doesn't raise or show a message in GIMP: it returns False or
+      None (Procedure.run() returns its status first). Check the result, and read GIMP's
+      reason with Gimp.get_pdb().get_last_error()
 
     GIMP 3.2 API Changes:
     - Use Gimp.get_images() instead of deprecated Gimp.list_images()
