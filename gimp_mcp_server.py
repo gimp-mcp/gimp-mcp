@@ -1751,7 +1751,9 @@ def create_layer(
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
       it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
-    - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
+    - blend_mode: NORMAL (default), MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE,
+      BURN, HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY,
+      or DISSOLVE. Names are case-insensitive and accept spaces or hyphens for underscores.
     - position: 0 or more = index among the image's top-level layers, counted from
       the top (0 = top); a value past the bottom puts the layer at the bottom.
       -1 (default) = directly above the selected layer, inside its group if it is in
@@ -1897,7 +1899,10 @@ def set_layer_properties(
     Parameters:
     - layer_name / layer_index: Identify the layer (defaults to active layer)
     - opacity: New opacity 0-100 (omit to leave unchanged)
-    - blend_mode: New GIMP layer mode name (omit to leave unchanged)
+    - blend_mode: NORMAL, MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE, BURN,
+      HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY, or
+      DISSOLVE. Names are case-insensitive and accept spaces or hyphens for underscores.
+      Omit or pass an empty string to leave unchanged.
     - visible: True/False visibility (omit to leave unchanged)
     - image_index: Target image index (default 0)
 

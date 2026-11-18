@@ -3281,7 +3281,12 @@ class MCPPlugin(Gimp.PlugIn):
             "LUMINOSITY":  Gimp.LayerMode.HSV_VALUE,
             "DISSOLVE":    Gimp.LayerMode.DISSOLVE,
         }
-        return MODE_MAP.get(mode_str.upper(), Gimp.LayerMode.NORMAL)
+        name = "_".join(mode_str.upper().replace("-", " ").split())
+        if name not in MODE_MAP:
+            raise ValueError(
+                f"Unknown blend_mode {mode_str!r}. Supported modes: {', '.join(MODE_MAP)}"
+            )
+        return MODE_MAP[name]
 
     def _create_layer(self, params):
         """Create and insert a new layer."""
@@ -3428,11 +3433,12 @@ class MCPPlugin(Gimp.PlugIn):
             opacity     = params.get("opacity", None)
             blend_mode  = params.get("blend_mode", None)
             visible     = params.get("visible", None)
+            mode = self._blend_mode_from_string(blend_mode) if blend_mode not in (None, "") else None
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
-            if opacity is None and blend_mode is None and visible is None:
+            if opacity is None and mode is None and visible is None:
                 return {"status": "success", "results": {"status": "success"}}
             if opacity is not None:
                 opacity = float(opacity)
@@ -3442,8 +3448,8 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 if opacity is not None:
                     layer.set_opacity(opacity)
-                if blend_mode is not None:
-                    layer.set_mode(self._blend_mode_from_string(blend_mode))
+                if mode is not None:
+                    layer.set_mode(mode)
                 if visible is not None:
                     layer.set_visible(bool(visible))
             finally:

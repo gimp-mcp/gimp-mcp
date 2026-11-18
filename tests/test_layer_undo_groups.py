@@ -24,6 +24,11 @@ class LayerUndoGroupsTests(unittest.TestCase):
         self.assertEqual(result, {"status": "success", "results": {"status": "success"}})
         self.assertEqual(self.calls.mock_calls, [])
 
+    def test_set_layer_properties_skips_undo_for_empty_blend_mode(self):
+        result = self.plugin._set_layer_properties({"blend_mode": ""})
+        self.assertEqual(result, {"status": "success", "results": {"status": "success"}})
+        self.assertEqual(self.calls.mock_calls, [])
+
     def test_set_layer_properties_rejects_invalid_opacity_before_undo(self):
         result = self.plugin._set_layer_properties({"opacity": "abc", "visible": False})
         self.assertEqual(result["status"], "error")
