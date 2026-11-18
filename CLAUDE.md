@@ -104,7 +104,10 @@ The main interface is the `call_api` tool with parameters:
     foreground fill) paint them as opaque black. To make the selected pixels transparent,
     use `fill_selection(fill_type="transparent")`; the selection stays active, and
     `select_none` removes it.
-- In `call_api` code, build colors from hex: `Gegl.Color.new("#ff8000")`.
+- In `call_api` code, build colors from hex: `Gegl.Color.new("#ff8000")`. Unlike the tools,
+  `Gegl.Color.new()` knows only the 16 basic HTML color names and `transparent`/`none`
+  besides hex, and turns any other name (`orange`, `gold`, ...) into **cyan** without an
+  error.
   `Gegl.Color.new("rgb(...)")` and `set_rgba()` take **linear** values, so
   `rgb(255,...)` clamps to white and `rgb(1.0, 0.5, 0)` looks washed out; only hex is
   read as sRGB. (The plugin's tools convert every color format to hex for this reason.)

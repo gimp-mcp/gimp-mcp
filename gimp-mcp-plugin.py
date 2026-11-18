@@ -218,7 +218,7 @@ def _components_to_hex(parts, spec):
     is read as 0-1 when it is at most 1, else as 0-255; "50%" also works.
     """
     if len(parts) not in (3, 4):
-        raise ValueError(f"Invalid color {spec!r}: rgb() needs 3 values and rgba() 4, "
+        raise ValueError(f"Invalid color {spec!r}: rgb() and rgba() take 3 or 4 values, "
                          f"got {len(parts)}")
 
     def number(part):
@@ -261,7 +261,10 @@ def _split_rgb(inside, spec):
     """The values inside rgb(...): "r, g, b[, a]", "r g b[ / a]" or "r g b a"."""
     if "," in inside:
         parts = [p.strip() for p in inside.split(",")]
-        if any(not p or " " in p or "/" in p for p in parts):
+        if any(not p for p in parts):
+            raise ValueError(f"Invalid color {spec!r}: a value is empty (check for a doubled "
+                             f"or trailing comma)")
+        if any(" " in p or "/" in p for p in parts):
             raise ValueError(f"Invalid color {spec!r}: separate the values with commas only, "
                              f"as in rgb(255, 128, 0)")
         return parts
@@ -293,8 +296,9 @@ def color_to_hex(spec):
     [r, g, b(, a)] list or tuple. Hex is the only form Gegl reads as sRGB:
     it reads rgb() strings as linear values.
 
-    Raises ValueError (TypeError for a non-string) for anything else, so an
-    unknown color is reported instead of painted as cyan.
+    Raises ValueError for anything else (TypeError for a value that is not a
+    string, list or tuple), so an unknown color is reported instead of
+    painted as cyan.
     """
     if isinstance(spec, (list, tuple)):
         return _components_to_hex(list(spec), spec)
@@ -3608,8 +3612,11 @@ class MCPPlugin(Gimp.PlugIn):
     def _set_colors(self, params):
         """Set foreground and/or background color."""
         try:
+            # "" counts as omitted: clients often send it for optional arguments.
             fg_str = params.get("foreground", None)
             bg_str = params.get("background", None)
+            fg_str = None if fg_str == "" else fg_str
+            bg_str = None if bg_str == "" else bg_str
             # Parse both before setting either, so a bad background can't
             # leave only the foreground changed.
             fg = self._color(fg_str) if fg_str is not None else None
@@ -4068,7 +4075,10 @@ class MCPPlugin(Gimp.PlugIn):
             if isinstance(new_font, str) and not new_font.strip():
                 new_font = None
             new_size    = params.get("size", None)
+            # A blank color, like a blank font, leaves it unchanged.
             new_color   = params.get("color", None)
+            if new_color == "":
+                new_color = None
             # Parse the color before any edit, so a bad color can't leave the
             # text, font or size changed.
             color_obj = self._color(new_color) if new_color is not None else None

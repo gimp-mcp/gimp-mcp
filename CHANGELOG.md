@@ -20,11 +20,12 @@ right command when the versions differ.
 - A color the tools can't read returns an error naming it and leaves the image unchanged.
   Unknown names, hex without `#` and other strings GIMP couldn't read used to paint cyan
   and report success, and values after an `rgba()` color's fourth were ignored (#145).
-  A rejected color no longer clears GIMP's redo history. An empty `color` (`""`) still
-  means "no color" in `draw_line`, `draw_rectangle`, `draw_ellipse` and `fill_selection`,
-  which then use the current foreground color.
-- `fill_selection` with no `color` fills with the current foreground color. It used to
-  fail.
+  A rejected color no longer clears GIMP's redo history.
+- An empty color (`""`) means "no color", as in `draw_line`, `draw_rectangle` and
+  `draw_ellipse`: `fill_selection` fills with the current foreground color, and
+  `edit_text` and `set_colors` leave the color unchanged. They used to paint or set cyan.
+- `fill_selection` with no `color` fills with the current foreground color. Through the
+  MCP server it used to fail; a direct plug-in request without `color` filled white.
 - `fill="none"` is transparent, like `fill="transparent"`, in `new_canvas`, `create_layer`
   and `resize_canvas`. `resize_canvas` used to flatten the image for it.
 
@@ -37,6 +38,7 @@ right command when the versions differ.
     `rgb(255, 128 0)`.
   - Text after the closing paren, as in `rgb(1,2,3) junk`, or another word in place of
     `rgb`, as in `rgbx(1,2,3)`.
+  - An empty value from a doubled, leading or trailing comma, as in `rgb(255,0,0,)`.
 
 ### Added
 - Percentages in `rgb()` / `rgba()` colors, such as `rgb(50%, 50%, 50%)`, and the

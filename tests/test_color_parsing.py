@@ -17,6 +17,7 @@ Stubs gi.repository, so no GIMP is needed. Run with:
 uv run tests/test_color_parsing.py
 Exits 0 on pass, 1 on fail.
 """
+import hashlib
 import os
 import sys
 import types
@@ -27,6 +28,10 @@ sys.path.insert(0, HERE)
 from test_gimp3_compat import FakeImage3, install_gi_stub, load_plugin  # noqa: E402
 
 failures = []
+
+# sha256 of the sorted "name=#hex" pairs in CSS_COLORS, computed from Pillow's
+# ImageColor.colormap (lowercased); see the check in main().
+CSS_COLORS_SHA256 = "cf637d36ac5eef8835d63fd5f9f0cd88bdc1a1c0d0aa2dd44f68cf0cd6d03d10"
 
 
 def check(name, condition, detail=""):
@@ -74,6 +79,12 @@ def main():
     for name, value in plugin.CSS_COLORS.items():
         if to_hex(name) != value:
             check(f"name {name}", False, to_hex(name))
+    # The table was checked against Pillow's ImageColor.colormap (all 148 equal).
+    # This checksum makes any later edit to a name or value fail here; if one is
+    # intended, check the table again and update the checksum.
+    table = ",".join(f"{k}={v}" for k, v in sorted(plugin.CSS_COLORS.items()))
+    digest = hashlib.sha256(table.encode()).hexdigest()
+    check("CSS_COLORS unchanged", digest == CSS_COLORS_SHA256, digest)
 
     # Hex.
     expect("#FF5733", "#ff5733")
@@ -116,7 +127,9 @@ def main():
     expect_error("rgb(a,b,c)", "'a' is not a number")
     expect_error("rgb(nan,0,0)", "is not a number")
     expect_error("rgb(50%,128,0)", "percentages")
-    expect_error("rgb(255,,128,0)", "commas only")
+    expect_error("rgb(255,,128,0)", "a value is empty")
+    expect_error("rgb(255,0,0,)", "a value is empty")
+    expect_error("rgb(,255,0,0)", "a value is empty")
     expect_error("rgb(255, 128 0)", "commas only")
     expect_error("rgba(255,0,0/0.5)", "commas only")
     expect_error("rgb(255 / 128 0 0.5)", "after the '/'")
@@ -128,6 +141,8 @@ def main():
     expect_error("rgb(1,2,3) junk", "Unknown color")
     expect_error("rgbx(1,2,3)", "Unknown color")
     expect_error("hsl(0,100%,50%)", "Unknown color")
+    expect_error("cmyk(0,100,100,0)", "Unknown color")  # Gegl read it, but undocumented
+    expect_error("cmyka(0,100,100,0,1)", "Unknown color")
     expect_error([1, 2], "got 2")
     expect_error(None, "expected a string")
 
@@ -155,8 +170,8 @@ def main():
           {"undo_group_start": len(started), "calls": state["calls"]})
 
     # The other painting tools also reject a bad color before opening an undo
-    # group, which would clear GIMP's redo history. An empty color is an error
-    # too, not "use the current foreground".
+    # group, which would clear GIMP's redo history. (An empty color means
+    # "no color" instead; see below.)
     state["bounds"] = (True, True, 0, 0, 10, 10)  # fill_selection needs a selection
     img.get_width = lambda: 100
     img.get_height = lambda: 100
@@ -198,8 +213,8 @@ def main():
     gimp.Drawable.edit_fill = staticmethod(
         lambda drawable, fill_type: ops.append(f"edit_fill {fill_type}") or True)
     gimp.Drawable.edit_clear = staticmethod(lambda drawable: ops.append("edit_clear") or True)
-    img.select_rectangle = lambda *args: None
-    img.select_ellipse = lambda *args: None
+    img.select_rectangle = lambda *args: ops.append("select_rectangle")
+    img.select_ellipse = lambda *args: ops.append("select_ellipse")
     p._lookup_pdb = lambda name: types.SimpleNamespace(
         name=name, create_config=lambda: types.SimpleNamespace(set_property=lambda *args: None))
     p._run_pdb = lambda proc, config: ops.append(proc.name)
@@ -213,8 +228,8 @@ def main():
     for tool, params, expected_ops in [
         ("_draw_line", {"color": None, "x2": 5, "y2": 5}, ["pencil"]),
         ("_draw_line", {"color": "", "x2": 5, "y2": 5}, ["pencil"]),
-        ("_draw_rectangle", {"color": "", **rect}, [stroke]),
-        ("_draw_ellipse", {"color": None, **rect}, [stroke]),
+        ("_draw_rectangle", {"color": "", **rect}, ["select_rectangle", stroke]),
+        ("_draw_ellipse", {"color": None, **rect}, ["select_ellipse", stroke]),
         ("_fill_selection", {"color": None, "fill_type": None}, [fill_fg]),
         ("_fill_selection", {"color": "", "fill_type": "foreground"}, [fill_fg]),
         ("_fill_selection", {}, [fill_fg]),  # no color key at all (a raw socket call)
@@ -234,7 +249,7 @@ def main():
     set_red = f"set_foreground {('color', '#ff0000')}"
     for tool, params, expected_ops in [
         ("_draw_line", {"color": "red", "x2": 5, "y2": 5}, [set_red, "pencil"]),
-        ("_draw_rectangle", {"color": "red", **rect}, [set_red, stroke]),
+        ("_draw_rectangle", {"color": "red", **rect}, [set_red, "select_rectangle", stroke]),
         ("_fill_selection", {"color": "red"}, [set_red, fill_fg]),
     ]:
         ops.clear()
@@ -256,6 +271,116 @@ def main():
         check(f"resize_canvas fill={fill!r} succeeds", r.get("status") == "success", r)
         check(f"resize_canvas fill={fill!r} {'flattens' if should_flatten else 'does not flatten'}",
               bool(flattened) == should_flatten, len(flattened))
+
+    # More tools given a bad color return an error before changing anything:
+    # no undo group, context push, resize, fill or color set.
+    gimp.context_push = staticmethod(lambda: ops.append("context_push"))
+    gimp.context_set_background = staticmethod(lambda color: ops.append(f"set_background {color}"))
+    img.resize = lambda *args: ops.append("resize") or True
+    for tool, params in [
+        ("_fill_rectangle", {"color": "nope", **rect}),
+        ("_fill_ellipse", {"color": "nope", **rect}),
+        ("_select_by_color", {"color": "nope"}),
+        ("_set_colors", {"foreground": "red", "background": "nope"}),
+        ("_edit_text", {"text": "x", "color": "nope"}),
+        ("_apply_drop_shadow", {"color": "nope"}),
+        ("_resize_canvas", {"width": 50, "height": 50, "fill": "nope"}),
+    ]:
+        started.clear()
+        ops.clear()
+        r = getattr(p, tool)({"image_index": 0, **params})
+        name = f"{tool} {params}"
+        check(f"{name} rejected",
+              r.get("status") == "error" and "Unknown color" in r.get("error", ""), r)
+        check(f"{name} changed nothing", not started and not ops,
+              {"undo_group_start": len(started), "ops": ops})
+
+    # set_colors and edit_text: "" leaves that color unchanged, like an omitted one.
+    p._color = lambda spec: parsed.append(spec) or real_color(spec)
+    parsed.clear()
+    ops.clear()
+    r = p._set_colors({"foreground": "", "background": "blue"})
+    check("set_colors foreground='' sets only the background",
+          r.get("status") == "success" and parsed == ["blue"]
+          and ops == [f"set_background {('color', '#0000ff')}"], (r, parsed, ops))
+    ops.clear()
+    r = p._set_colors({"foreground": "red", "background": []})
+    check("set_colors background=[] rejected before any color is set",
+          r.get("status") == "error" and not ops, (r.get("error"), ops))
+    parsed.clear()
+    ops.clear()
+    r = p._edit_text({"image_index": 0, "layer_name": "layer", "text": "x", "color": ""})
+    check("edit_text color='' changes the text but not the color",
+          r.get("status") == "success" and not parsed
+          and "gimp-text-layer-set-text" in ops and "gimp-text-layer-set-color" not in ops,
+          (r.get("error"), parsed, ops))
+    p._color = real_color
+
+    # new_canvas and create_layer: "none" (any case) is a transparent fill, and
+    # new_canvas reads a null fill as omitted (white), not as the string "None".
+    class NewLayer:
+        def fill(self, fill_type):
+            ops.append(f"layer_fill {fill_type}")
+            return True
+
+        def add_alpha(self):
+            ops.append("add_alpha")
+
+        def delete(self):
+            ops.append("layer_delete")
+
+        def get_parent(self):
+            return None
+
+        def get_name(self):
+            return "new"
+
+        def get_id(self):
+            return 2
+
+    class NewImage:
+        def set_resolution(self, x, y):
+            pass
+
+        def insert_layer(self, layer, parent, position):
+            return True
+
+        def delete(self):
+            ops.append("image_delete")
+
+        def get_id(self):
+            return 3
+
+    gimp.FillType.TRANSPARENT = 3
+    gimp.MAX_IMAGE_SIZE = 524288
+    gimp.ImageType = types.SimpleNamespace(RGB_IMAGE=0, RGBA_IMAGE=1, GRAY_IMAGE=2, GRAYA_IMAGE=3,
+                                           INDEXEDA_IMAGE=5)
+    gimp.Image = types.SimpleNamespace(new=lambda width, height, base_type: NewImage())
+    gimp.Layer = types.SimpleNamespace(new=lambda *args: NewLayer())
+    p._create_display = lambda image: False
+    p._blend_mode_from_string = lambda mode: 0
+    img.get_base_type = lambda: gimp.ImageBaseType.RGB
+    img.insert_layer = lambda layer, parent, position: True
+    img.get_item_position = lambda layer: 0
+    transparent_fill = ["layer_fill 3"]
+    canvas_transparent_fill = ["add_alpha", "layer_fill 3"]  # new_canvas adds alpha first
+    white_fill = [f"set_background {('color', '#ffffff')}", "layer_fill 1"]
+    for tool, params, expected_ops in [
+        ("_new_canvas", {"width": 10, "height": 10, "fill": "none"}, canvas_transparent_fill),
+        ("_new_canvas", {"width": 10, "height": 10, "fill": "None"}, canvas_transparent_fill),
+        ("_new_canvas", {"width": 10, "height": 10, "fill": None}, white_fill),
+        ("_new_canvas", {"width": 10, "height": 10}, white_fill),
+        ("_create_layer", {"name": "a", "fill": "NONE"}, transparent_fill),
+        ("_create_layer", {"name": "b", "fill": "transparent"}, transparent_fill),
+        ("_create_layer", {"name": "c", "fill": "white"}, white_fill),
+    ]:
+        ops.clear()
+        r = getattr(p, tool)({"image_index": 0, **params})
+        name = f"{tool} {params}"
+        check(f"{name} succeeds", r.get("status") == "success", r)
+        # context_push, from the background fill, isn't part of the comparison.
+        got = [op for op in ops if op != "context_push"]
+        check(f"{name} fills {expected_ops}", got == expected_ops, got)
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll color parsing tests passed")
     return 1 if failures else 0
