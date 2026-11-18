@@ -16,9 +16,10 @@ right command when the versions differ.
 ## [0.5.0] - 2026-11-18
 
 ### Changed
-- A malformed `rgb()` / `rgba()` color, such as `rgb(50%,50%,50%)` or `rgb(1,2)`, returns an
-  error and leaves the image unchanged. It used to paint cyan and report success (#41).
-  Unknown color names still paint cyan (#44).
+- An `rgb()` / `rgba()` color whose values can't be read, such as `rgb(50%,50%,50%)`
+  (percentages) or `rgb(1,2)` (too few values), returns an error and leaves the image
+  unchanged. It used to paint cyan and report success (#41). Unknown color names still
+  paint cyan (#44), and values after the fourth are ignored (#145).
 
 ### Fixed
 - `get_state_snapshot` validates region coordinates and required dimensions before
