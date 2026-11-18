@@ -3397,11 +3397,13 @@ class MCPPlugin(Gimp.PlugIn):
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color first, so a bad color fails before the selection
+            # is touched (the cleanup below clears it).
+            fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
             try:
                 Gimp.Selection.all(image)
-                fg = self._color(color_str)
                 Gimp.context_set_foreground(fg)
                 self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                "Filling the layer")
@@ -3527,11 +3529,14 @@ class MCPPlugin(Gimp.PlugIn):
             line_width = float(params.get("line_width", 2.0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color first, so a bad color fails before the selection
+            # is touched (the cleanup below clears it).
+            fg = self._color(color_str) if color_str else None
             image.undo_group_start()
             self._push_paint_context()
             try:
-                if color_str:
-                    Gimp.context_set_foreground(self._color(color_str))
+                if fg is not None:
+                    Gimp.context_set_foreground(fg)
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
@@ -3563,11 +3568,14 @@ class MCPPlugin(Gimp.PlugIn):
             line_width = float(params.get("line_width", 2.0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color first, so a bad color fails before the selection
+            # is touched (the cleanup below clears it).
+            fg = self._color(color_str) if color_str else None
             image.undo_group_start()
             self._push_paint_context()
             try:
-                if color_str:
-                    Gimp.context_set_foreground(self._color(color_str))
+                if fg is not None:
+                    Gimp.context_set_foreground(fg)
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
@@ -3598,11 +3606,14 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color first, so a bad color fails before the selection
+            # is touched (the cleanup below clears it).
+            fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
             try:
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(self._color(color_str))
+                Gimp.context_set_foreground(fg)
                 self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                "Filling the region")
             finally:
@@ -3628,11 +3639,14 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color first, so a bad color fails before the selection
+            # is touched (the cleanup below clears it).
+            fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
             try:
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(self._color(color_str))
+                Gimp.context_set_foreground(fg)
                 self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                "Filling the region")
             finally:
