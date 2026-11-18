@@ -17,6 +17,19 @@ right command when the versions differ.
 - `get_state_snapshot` validates region coordinates and required dimensions before
   connecting to GIMP. Missing sizes no longer use `max_size`, and invalid values
   return errors naming the caller's `x`, `y`, `width` or `height` parameter (#141).
+- Colors given as `rgb()` paint the color asked for. 0-255 values such as
+  `rgb(255,87,51)` used to paint white, and 0-1 values looked washed out, because GIMP
+  read them as linear values (#50). Based on #41 by @robisonsantos.
+- `gradient_fill` paints the gradient, limited to the selection if there is one. It used
+  to paint nothing (#41).
+- `close_image` and `set_active_image` work on GIMP 3.2 instead of failing with an
+  `AttributeError` (#51). `close_image` never reports success while the image is still
+  open: for an image whose window was opened in GIMP directly, it returns an error saying
+  to close the window there. `set_active_image` raises windows the plugin opened and
+  returns an error for other images.
+- `undo` and `redo` return an error explaining that GIMP 3 has no scriptable undo,
+  instead of failing with an `AttributeError` (#42).
+- **Tools > MCP > Start MCP Server** shows a message once the server has started.
 
 ## [0.4.0] - 2026-11-17
 

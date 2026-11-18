@@ -348,8 +348,8 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 ### ↩️ History
 | Tool | Description |
 |---|---|
-| `undo` | Undo one or more operations on an image |
-| `redo` | Redo previously undone operations |
+| `undo` | Not supported on GIMP 3.x: returns an error (use Ctrl+Z in GIMP) |
+| `redo` | Not supported on GIMP 3.x: returns an error (use Ctrl+Y in GIMP) |
 
 ### 🔍 Info & Context
 | Tool | Description |

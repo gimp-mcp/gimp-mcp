@@ -697,7 +697,7 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     Important Tips:
     - When filling layers with color, ensure layer has alpha channel using Gimp.Layer.add_alpha()
     - Use Gimp.Drawable.fill() for reliable full-layer fills
-    - Specify colors precisely with rgb(R, G, B) or rgba(R, G, B, A) to avoid transparency issues
+    - Build colors from hex, e.g. Gegl.Color.new("#ff8000"): Gegl reads rgb(...)/rgba(...) values as linear, so rgb(255, ...) clamps to white
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
 
@@ -2905,7 +2905,12 @@ def list_images(ctx: Context) -> dict:
 
 @gimp_tool()
 def set_active_image(ctx: Context, image_index: int) -> dict:
-    """Raise a specific image to the front / make it active in GIMP.
+    """Raise a specific image's window to the front in GIMP.
+
+    Only windows the plug-in opened (open_image, new_canvas) can be raised.
+    For an image whose window was opened in GIMP directly or by call_api code
+    (Gimp.Display.new), or was closed, this fails with an error; other tools
+    still work on it by image_index.
 
     Parameters:
     - image_index: Index of the image to activate (from list_images)
@@ -2925,13 +2930,23 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
 
 @gimp_tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Undo one or more operations on an image.
+    """NOT SUPPORTED on GIMP 3.x: this tool always fails.
+
+    GIMP 3.x gives plug-ins no way to perform an undo: its API only groups
+    operations into undo steps. The call raises with an explanation rather
+    than undoing anything (scriptable undo is tracked in issue #86).
+
+    Do not plan a workflow around being able to undo. Instead:
+    - work on a copy (duplicate_layer) and delete it to revert, or
+    - check with get_state_snapshot before a change that is hard to reverse.
+
+    A human can still press Ctrl+Z in GIMP. Most drawing and editing tools
+    group their changes, so one Ctrl+Z reverts the whole operation; others
+    (e.g. selection tools, call_api code) may take several.
 
     Parameters:
-    - steps: Number of undo steps (default 1)
-    - image_index: Target image index (default 0)
-
-    Returns: {steps_undone}
+    - steps: Ignored (kept for client compatibility)
+    - image_index: Ignored (kept for client compatibility)
     """
     try:
         conn = get_gimp_connection()
@@ -2946,13 +2961,15 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
 
 @gimp_tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Redo one or more previously undone operations on an image.
+    """NOT SUPPORTED on GIMP 3.x: this tool always fails.
+
+    Same limitation as undo: GIMP 3.x gives plug-ins no way to perform a
+    redo. The call raises with an explanation rather than redoing anything.
+    A human can still press Ctrl+Y in GIMP.
 
     Parameters:
-    - steps: Number of redo steps (default 1)
-    - image_index: Target image index (default 0)
-
-    Returns: {steps_redone}
+    - steps: Ignored (kept for client compatibility)
+    - image_index: Ignored (kept for client compatibility)
     """
     try:
         conn = get_gimp_connection()
@@ -3001,6 +3018,14 @@ def close_image(
     save_first: bool = False
 ) -> dict:
     """Close an image, optionally saving as XCF first.
+
+    Closes images whose window the plug-in opened (open_image, new_canvas) or
+    that have no window. An image whose window was opened in GIMP directly, or
+    by call_api code (Gimp.Display.new), can't be closed from here: this fails
+    with an error and the image stays open.
+
+    Unsaved changes are discarded without asking. Pass save_first=True to keep
+    them as XCF (export_image flattens by default, so it doesn't keep layers).
 
     Parameters:
     - image_index: Index of the image to close (default 0)
