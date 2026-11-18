@@ -3055,36 +3055,76 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = int(params.get("image_index", 0))
             angle       = float(params.get("angle", 90))
+            if not math.isfinite(angle):
+                raise ValueError(f"angle must be a finite number, got {angle!r}")
             image = self._get_image(image_index)
-            image.undo_group_start()
-            try:
-                rot_map = {
-                    90.0:  Gimp.RotationType.DEGREES90,
-                    180.0: Gimp.RotationType.DEGREES180,
-                    270.0: Gimp.RotationType.DEGREES270,
-                    -90.0: Gimp.RotationType.DEGREES270,
-                }
-                if angle in rot_map:
-                    self._check_ok(image.rotate(rot_map[angle]), "Rotating the image")
-                else:
-                    import math
-                    rad = math.radians(angle)
-                    proc = self._lookup_pdb("gimp-item-transform-rotate-default")
-                    for layer in image.get_layers():
-                        cfg = proc.create_config()
-                        cfg.set_property("item",      layer)
-                        cfg.set_property("angle",     rad)
-                        cfg.set_property("auto-center", True)
-                        cfg.set_property("center-x",  0)
-                        cfg.set_property("center-y",  0)
-                        self._run_pdb(proc, cfg)
-                    self._check_item(image.flatten(), "Flattening the rotated image")
-            finally:
-                image.undo_group_end()
-            Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success", "angle": angle}}
+            # Positive angles turn clockwise, as Gimp.RotationType.DEGREES90 does.
+            turn = angle % 360.0
+            rot_map = {
+                90.0:  Gimp.RotationType.DEGREES90,
+                180.0: Gimp.RotationType.DEGREES180,
+                270.0: Gimp.RotationType.DEGREES270,
+            }
+            if turn != 0.0:
+                image.undo_group_start()
+                try:
+                    if turn in rot_map:
+                        self._check_ok(image.rotate(rot_map[turn]), "Rotating the image")
+                    else:
+                        self._rotate_image_arbitrary(image, angle)
+                finally:
+                    image.undo_group_end()
+                Gimp.displays_flush()
+            return {"status": "success", "results": {
+                "status": "success", "angle": angle,
+                "width": image.get_width(), "height": image.get_height(),
+            }}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _rotate_image_arbitrary(self, image, angle):
+        """Rotate the whole image by a non-right angle, keeping its layers.
+
+        GIMP has no image-level arbitrary rotation, so: grow the canvas to the
+        rotated image's bounding box, then rotate every layer, channel and path
+        and the selection about the image centre. Layers get an alpha channel
+        so the uncovered corners are transparent.
+
+        A drawable transform with an active selection rotates only the selected
+        pixels, into a floating selection. So the selection is saved to a
+        channel and cleared first, and restored from that channel at the end.
+        """
+        w, h = image.get_width(), image.get_height()
+        rad = math.radians(angle)
+        cos_a, sin_a = abs(math.cos(rad)), abs(math.sin(rad))
+        new_w = max(1, math.ceil(w * cos_a + h * sin_a - 1e-6))
+        new_h = max(1, math.ceil(w * sin_a + h * cos_a - 1e-6))
+        off_x, off_y = (new_w - w) // 2, (new_h - h) // 2
+        cx, cy = off_x + w / 2.0, off_y + h / 2.0
+
+        saved_sel = None
+        if not Gimp.Selection.is_empty(image):
+            saved_sel = self._check_item(Gimp.Selection.save(image), "Saving the selection")
+            self._check_ok(Gimp.Selection.none(image), "Clearing the selection")
+
+        self._check_ok(image.resize(new_w, new_h, off_x, off_y), "Growing the canvas")
+        Gimp.context_push()
+        try:
+            # Let rotated layers grow instead of clipping them to their old size.
+            Gimp.context_set_transform_resize(Gimp.TransformResize.ADJUST)
+            items = list(image.get_layers()) + list(image.get_channels()) + list(image.get_paths())
+            for item in items:
+                if isinstance(item, Gimp.Layer) and not item.has_alpha():
+                    self._check_ok(item.add_alpha(), f"Adding alpha to layer {item.get_name()!r}")
+                self._check_item(item.transform_rotate(rad, False, cx, cy),
+                                 f"Rotating {item.get_name()!r}")
+        finally:
+            Gimp.context_pop()
+
+        if saved_sel is not None:
+            # The saved selection is in image.get_channels(), so it was rotated above.
+            self._check_ok(image.select_item(Gimp.ChannelOps.REPLACE, saved_sel), "Restoring the selection")
+            image.remove_channel(saved_sel)
 
     def _flip_image(self, params):
         """Flip image horizontally or vertically."""

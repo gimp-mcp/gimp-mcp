@@ -1440,11 +1440,14 @@ def rotate_image(
     """Rotate the entire image.
 
     Parameters:
-    - angle: Rotation in degrees — 90, 180, 270 use lossless GIMP rotation;
-             other values rotate all layers with interpolation and flatten
+    - angle: Rotation in degrees, clockwise (negative = counter-clockwise).
+             Multiples of 90 rotate losslessly. Other angles rotate every
+             layer, channel, path and the selection about the image centre with
+             interpolation, and grow the canvas to fit; the uncovered corners
+             are transparent. Layers are kept (nothing is flattened).
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns status dict with the angle and the new width and height.
     """
     try:
         conn = get_gimp_connection()

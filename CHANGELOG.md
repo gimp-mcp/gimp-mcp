@@ -54,6 +54,11 @@ right command when the versions differ.
   or `image_<index>` for an image that was never saved. All exports used to go to
   `image.jpg` / `image.png`. An export that would overwrite the source file, also through a
   symlinked folder, gets a `_web` suffix. Based on #62 by @gr8monk3ys.
+- `rotate_image` with an angle that isn't a multiple of 90 works. It used to fail, asking
+  for a GIMP procedure that 3.2 doesn't have. It turns every layer, channel and path and
+  the selection clockwise about the image centre and grows the canvas to fit; the layers
+  are kept, not flattened, and the uncovered corners are transparent. Any multiple of 90,
+  such as -180 or 450, uses the lossless rotation. Based on #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
