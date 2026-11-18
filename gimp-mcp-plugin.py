@@ -3436,6 +3436,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return {"status": "success", "results": {"status": "success"}}
             if opacity is not None:
                 opacity = float(opacity)
+                if not 0 <= opacity <= 100:
+                    raise ValueError(f"opacity must be between 0 and 100, got {opacity}")
             image.undo_group_start()
             try:
                 if opacity is not None:

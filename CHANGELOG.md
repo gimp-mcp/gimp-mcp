@@ -14,6 +14,9 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
+- `edit_text` and `set_layer_properties` skip opening an undo group when no edits
+  are requested. `set_layer_properties` also rejects invalid opacity before opening
+  an undo group (#148).
 - All 148 CSS color names paint the right color. Names other than the 16 basic HTML ones,
   such as `orange`, `gold` or `cornflowerblue`, used to paint cyan (#44). Based on #54 by
   @floraschouw.

@@ -29,6 +29,15 @@ class LayerUndoGroupsTests(unittest.TestCase):
         self.assertIn("could not convert string to float", result["error"])
         self.assertEqual(self.calls.mock_calls, [])
 
+    def test_set_layer_properties_rejects_non_finite_and_out_of_range_opacity(self):
+        for opacity in ("nan", float("inf"), float("-inf"), -1, 101):
+            with self.subTest(opacity=opacity):
+                self.calls.reset_mock()
+                result = self.plugin._set_layer_properties({"opacity": opacity})
+                self.assertEqual(result["status"], "error")
+                self.assertIn("opacity must be between 0 and 100", result["error"])
+                self.assertEqual(self.calls.mock_calls, [])
+
     def test_set_layer_properties_keeps_zero_opacity_and_false_visibility(self):
         result = self.plugin._set_layer_properties({"opacity": 0, "visible": False})
         self.assertEqual(result["status"], "success")
