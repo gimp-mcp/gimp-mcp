@@ -18,9 +18,15 @@ right command when the versions differ.
   such as `orange`, `gold` or `cornflowerblue`, used to paint cyan (#44). Based on #54 by
   @floraschouw.
 - A color the tools can't read returns an error naming it and leaves the image unchanged.
-  Unknown names, hex without `#` and other strings that are neither hex nor `rgb()` used to
-  paint cyan and report success, and values after an `rgba()` color's fourth were ignored
-  (#145).
+  Unknown names, hex without `#` and other strings GIMP couldn't read used to paint cyan
+  and report success, and values after an `rgba()` color's fourth were ignored (#145).
+  `draw_line`, `draw_rectangle` and `draw_ellipse` also reject an empty `color` instead of
+  drawing with the current foreground color. A rejected color no longer clears GIMP's
+  redo history.
+
+### Changed
+- `cmyk()` colors return an error. GIMP read some of them, but they were never documented,
+  and Gegl reads others, such as `cmyk(0%,100%,100%,0%)`, as cyan. Use hex instead.
 
 ### Added
 - Percentages in `rgb()` / `rgba()` colors, such as `rgb(50%, 50%, 50%)`, and the

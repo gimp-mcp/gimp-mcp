@@ -8,6 +8,7 @@ raises ValueError for anything else:
 - all 148 CSS color names, case-insensitive
 - hex: #rgb, #rgba, #rrggbb, #rrggbbaa
 - rgb()/rgba() with 0-255 or 0-1 values, percentages, or "r g b / a"
+  ("r g b a" too, since 0.5.0 accepted it)
 - [r, g, b(, a)] lists
 - errors for unknown names, bad hex, too few or too many values, and
   non-numbers, before anything is painted
@@ -18,6 +19,7 @@ Exits 0 on pass, 1 on fail.
 """
 import os
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -113,7 +115,7 @@ def main():
     expect_error("rgba(255,0,0/0.5)", "commas only")
     expect_error("rgb(255 / 128 0 0.5)", "after the '/'")
     expect_error("rgb(255 128 0 / 0.5 1)", "after the '/'")
-    expect_error("rgb(255 0 0 0.5)", "'/' before the alpha")
+    expect("rgba(255 128 0 0.5)", "#ff800080")  # accepted before, so still accepted
     expect("rgb(1e308%, 0%, 0%)", "#ff0000")
     expect("rgba(0,0,0,1e308%)", "#000000ff")
     expect_error("rgb(255,0,0", "Unknown color")
@@ -135,6 +137,31 @@ def main():
           r.get("status") == "error" and "Unknown color" in r.get("error", ""), r)
     check("fill_layer painted nothing", not started and not state["calls"],
           {"undo_group_start": len(started), "calls": state["calls"]})
+
+    # The other painting tools also reject a bad color before opening an undo
+    # group, which would clear GIMP's redo history. An empty color is an error
+    # too, not "use the current foreground".
+    state["bounds"] = (True, True, 0, 0, 10, 10)  # fill_selection needs a selection
+    img.get_width = lambda: 100
+    img.get_height = lambda: 100
+    img._layer.get_id = lambda: 1
+    sys.modules["gi.repository"].Gimp.GradientType = types.SimpleNamespace(RADIAL=1, LINEAR=0)
+    p._resolve_font = lambda font: (object(), False)
+    rect = {"x": 0, "y": 0, "width": 5, "height": 5}
+    for tool, params in [
+        ("_fill_selection", {"color": "nope", "fill_type": "foreground"}),
+        ("_draw_line", {"color": "nope", "x2": 5, "y2": 5}),
+        ("_draw_line", {"color": "", "x2": 5, "y2": 5}),
+        ("_draw_rectangle", {"color": "", **rect}),
+        ("_draw_ellipse", {"color": "", **rect}),
+        ("_gradient_fill", {"color1": "nope", "color2": "white"}),
+        ("_add_text", {"text": "hi", "color": "nope"}),
+    ]:
+        started.clear()
+        r = getattr(p, tool)({"image_index": 0, **params})
+        name = f"{tool} color={params.get('color', params.get('color1'))!r}"
+        check(f"{name} rejected", "Unknown color" in r.get("error", ""), r)
+        check(f"{name} opened no undo group", not started, len(started))
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll color parsing tests passed")
     return 1 if failures else 0

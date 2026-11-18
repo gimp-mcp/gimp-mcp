@@ -86,13 +86,14 @@ The main interface is the `call_api` tool with parameters:
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
 - Colors: the MCP tools' color arguments (`fill`, `color`, `foreground`, ...) accept
-  hex (`"#rgb"`, `"#rgba"`, `"#rrggbb"`, `"#rrggbbaa"`), CSS `"rgb(r,g,b)"`/`"rgba(r,g,b,a)"`,
-  any of the 148 CSS color names (`orange`, `cornflowerblue`, ...), or `transparent`.
-  `rgb()` values are sRGB and read as 0-255 when any of them is above 1, else as 0-1;
+  hex (`"#rgb"`, `"#rgba"`, `"#rrggbb"`, `"#rrggbbaa"`), CSS `"rgb(r,g,b)"`/`"rgba(r,g,b,a)"`
+  (or `"rgb(r g b / a)"`), any of the 148 CSS color names (`orange`, `cornflowerblue`, ...), or `transparent`.
+  `rgb()` and `rgba()` both take 3 values or 4 (the 4th is alpha). RGB values are sRGB
+  and read as 0-255 when any of them is above 1, else as 0-1;
   percentages (`rgb(50%,50%,50%)`) work too, for all three values or none. Alpha is read
   as 0-1 when it is at most 1, else as 0-255, or as a percentage. Anything else
-  (unknown names, hex without `#`, `hsl()`, the wrong number of values) returns an
-  error and paints nothing.
+  (unknown names, hex without `#`, `hsl()`, `cmyk()`, the wrong number of values)
+  returns an error and paints nothing.
   - Alpha: fills that paint with the foreground color (`fill_rectangle`, `fill_ellipse`,
     ...) ignore the color's alpha and paint fully opaque. Use a layer's opacity for
     translucency.

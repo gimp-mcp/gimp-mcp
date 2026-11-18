@@ -258,7 +258,7 @@ def _components_to_hex(parts, spec):
 
 
 def _split_rgb(inside, spec):
-    """The values inside rgb(...): "r, g, b[, a]" or "r g b[ / a]"."""
+    """The values inside rgb(...): "r, g, b[, a]", "r g b[ / a]" or "r g b a"."""
     if "," in inside:
         parts = [p.strip() for p in inside.split(",")]
         if any(not p or " " in p or "/" in p for p in parts):
@@ -272,9 +272,6 @@ def _split_rgb(inside, spec):
             raise ValueError(f"Invalid color {spec!r}: put one alpha value after the '/', "
                              f"as in rgb(255 128 0 / 0.5)")
         parts.append(alpha.strip())
-    elif len(parts) == 4:
-        raise ValueError(f"Invalid color {spec!r}: put a '/' before the alpha value, "
-                         f"as in rgb(255 128 0 / 0.5)")
     return parts
 
 
@@ -3560,6 +3557,11 @@ class MCPPlugin(Gimp.PlugIn):
                               "fill_layer tool for a whole-layer fill."),
                 }
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = None
+            if fill_type not in ("transparent", "background", "pattern"):
+                fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3576,7 +3578,6 @@ class MCPPlugin(Gimp.PlugIn):
                                    "Filling the selection")
                 else:
                     # foreground (default) or explicit color
-                    fg = self._color(color_str if fill_type not in ("foreground",) else color_str)
                     Gimp.context_set_foreground(fg)
                     self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                    "Filling the selection")
@@ -3619,11 +3620,14 @@ class MCPPlugin(Gimp.PlugIn):
             tool       = params.get("tool", "pencil").lower()
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = self._color(color_str) if color_str is not None else None
             image.undo_group_start()
             self._push_paint_context()
             try:
-                if color_str:
-                    Gimp.context_set_foreground(self._color(color_str))
+                if fg is not None:
+                    Gimp.context_set_foreground(fg)
                 Gimp.context_set_brush_size(line_width)
                 coords = [x1, y1, x2, y2]
                 if tool == "paintbrush":
@@ -3653,7 +3657,7 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str else None
+            fg = self._color(color_str) if color_str is not None else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3692,7 +3696,7 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
-            fg = self._color(color_str) if color_str else None
+            fg = self._color(color_str) if color_str is not None else None
             image.undo_group_start()
             self._push_paint_context()
             try:
@@ -3816,11 +3820,15 @@ class MCPPlugin(Gimp.PlugIn):
             gtype = (Gimp.GradientType.RADIAL if gradient_type == "radial"
                      else Gimp.GradientType.LINEAR)
 
+            # Parse the colors before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = self._color(color1)
+            bg = self._color(color2)
             image.undo_group_start()
             self._push_paint_context()
             try:
-                Gimp.context_set_foreground(self._color(color1))
-                Gimp.context_set_background(self._color(color2))
+                Gimp.context_set_foreground(fg)
+                Gimp.context_set_background(bg)
                 Gimp.context_set_gradient_fg_bg_rgb()
                 # The gradient fill also uses these context settings, which an
                 # earlier call may have changed.
@@ -3990,10 +3998,13 @@ class MCPPlugin(Gimp.PlugIn):
             before_ids = {lyr.get_id() for lyr in image.get_layers()}
             text_layer = None
 
+            # Parse the color before the undo group opens: starting a group
+            # clears GIMP's redo history, even if nothing is painted.
+            fg = self._color(color_str)
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(self._color(color_str))
+                Gimp.context_set_foreground(fg)
                 text_layer = self._create_text_layer_native(
                     image, text_str, font_obj, size, x, y, color_str)
                 if text_layer is None:
