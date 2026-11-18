@@ -18,7 +18,9 @@ right command when the versions differ.
   already returns GIMP's reason; the message duplicated it, and calls that are expected
   to fail popped up messages too. In `call_api` code, a failed GIMP call returns False
   or None without a message: check the result, and `Gimp.get_pdb().get_last_error()`
-  for the reason.
+  for the reason. To get GIMP's messages back until GIMP restarts, run
+  `Gimp.get_plug_in().set_pdb_error_handler(Gimp.PDBErrorHandler.INTERNAL)` through
+  `call_api`.
 - `new_canvas` rejects a `resolution` outside 1-1048576, `draw_line` a `width` outside
   1-10000, and `draw_rectangle`/`draw_ellipse` a `line_width` outside 0-2000 (0 excluded).
   GIMP refused these values, but the tools went on: the canvas got the default resolution
