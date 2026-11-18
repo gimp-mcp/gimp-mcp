@@ -2008,6 +2008,10 @@ class MCPPlugin(Gimp.PlugIn):
             fill   = params.get("fill")
             fill   = "white" if fill is None else str(fill)
             resolution = int(params.get("resolution", 72))
+            # GIMP's limits; outside them set_resolution() fails and the image
+            # keeps the default resolution.
+            if not 1 <= resolution <= 1048576:
+                raise ValueError(f"resolution must be between 1 and 1048576, got {resolution}")
 
             mode_map = {
                 "RGB":   Gimp.ImageBaseType.RGB,
@@ -2025,7 +2029,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_type = layer_type_map.get(color_mode, Gimp.ImageType.RGB_IMAGE)
 
             image = Gimp.Image.new(width, height, base_type)
-            image.set_resolution(resolution, resolution)
+            try:
+                self._check_ok(image.set_resolution(resolution, resolution),
+                               f"Setting the resolution to {resolution}")
+            except Exception:
+                image.delete()
+                raise
 
             layer = Gimp.Layer.new(image, name, width, height, layer_type, 100, Gimp.LayerMode.NORMAL)
             image.insert_layer(layer, None, 0)
@@ -3680,6 +3689,9 @@ class MCPPlugin(Gimp.PlugIn):
             color_str  = params.get("color", None)
             line_width = float(params.get("width", 2.0))
             tool       = params.get("tool", "pencil").lower()
+            # GIMP's brush size limits; outside them the old size would be kept.
+            if not 1 <= line_width <= 10000:
+                raise ValueError(f"width must be between 1 and 10000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color before the undo group opens: starting a group
@@ -3691,7 +3703,7 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 if fg is not None:
                     Gimp.context_set_foreground(fg)
-                Gimp.context_set_brush_size(line_width)
+                self._check_ok(Gimp.context_set_brush_size(line_width), "Setting the brush size")
                 coords = [x1, y1, x2, y2]
                 if tool == "paintbrush":
                     self._check_ok(Gimp.paintbrush_default(drawable, coords), "Drawing the line")
@@ -3716,6 +3728,10 @@ class MCPPlugin(Gimp.PlugIn):
             height     = int(params.get("height"))
             color_str  = params.get("color", None)
             line_width = float(params.get("line_width", 2.0))
+            # GIMP's line width limit; outside it the old width would be kept,
+            # and a width of 0 strokes nothing.
+            if not 0 < line_width <= 2000:
+                raise ValueError(f"line_width must be more than 0 and at most 2000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
@@ -3728,7 +3744,7 @@ class MCPPlugin(Gimp.PlugIn):
                 if fg is not None:
                     Gimp.context_set_foreground(fg)
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
-                Gimp.context_set_line_width(line_width)
+                self._check_ok(Gimp.context_set_line_width(line_width), "Setting the line width")
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 proc = self._lookup_pdb("gimp-drawable-edit-stroke-selection")
                 cfg = proc.create_config()
@@ -3756,6 +3772,10 @@ class MCPPlugin(Gimp.PlugIn):
             height     = int(params.get("height"))
             color_str  = params.get("color", None)
             line_width = float(params.get("line_width", 2.0))
+            # GIMP's line width limit; outside it the old width would be kept,
+            # and a width of 0 strokes nothing.
+            if not 0 < line_width <= 2000:
+                raise ValueError(f"line_width must be more than 0 and at most 2000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
@@ -3768,7 +3788,7 @@ class MCPPlugin(Gimp.PlugIn):
                 if fg is not None:
                     Gimp.context_set_foreground(fg)
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
-                Gimp.context_set_line_width(line_width)
+                self._check_ok(Gimp.context_set_line_width(line_width), "Setting the line width")
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 proc = self._lookup_pdb("gimp-drawable-edit-stroke-selection")
                 cfg = proc.create_config()

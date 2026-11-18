@@ -8,7 +8,10 @@ error. Checks that:
 - the server process uses Gimp.PDBErrorHandler.PLUGIN;
 - a refused call still leaves GIMP's reason in get_last_error(), which the
   tools' error messages use (_check_ok);
-- a tool whose GIMP call is refused returns an error.
+- a tool whose GIMP call is refused returns an error;
+- the tools whose GIMP calls failed unchecked (so only GIMP's message showed
+  the failure) reject those values: new_canvas's resolution, draw_line's
+  width, draw_rectangle's and draw_ellipse's line_width. Nothing is changed.
 
 That GIMP shows no message can't be read back from a script. To see it by hand,
 run Gimp.message_set_handler(Gimp.MessageHandlerType.CONSOLE) through call_api
@@ -73,15 +76,18 @@ def main():
         check(handler == "True", "the server does not handle PDB errors itself")
         print("PASS: the server process uses the plug-in PDB error handler")
 
-        py("_peh_img = Gimp.Image.new(10, 10, Gimp.ImageBaseType.RGB)",
+        py("import json",
+           "_peh_img = Gimp.Image.new(10, 10, Gimp.ImageBaseType.RGB)",
            "_l = Gimp.Layer.new(_peh_img, 'a', 10, 10, Gimp.ImageType.RGB_IMAGE,"
            " 100, Gimp.LayerMode.NORMAL)",
            "_peh_img.insert_layer(_l, None, 0)")
         made_image = True
 
-        # Converting an RGB image to RGB is refused; the reason must still be readable.
-        out = py("print(_peh_img.convert_rgb())", "print(Gimp.get_pdb().get_last_error())")
-        check(out.startswith("False") and "must not be of type 'rgb'" in out,
+        # Converting an RGB image to RGB is refused; the reason must still be
+        # readable. GIMP translates it, so only check that there is one.
+        out = json.loads(py("_ok = _peh_img.convert_rgb()",
+                            "print(json.dumps([_ok, Gimp.get_pdb().get_last_error()]))"))
+        check(out[0] is False and out[1].strip(),
               "a refused call did not leave GIMP's reason in get_last_error()", out)
         print("PASS: a refused call returns False and GIMP's reason")
 
@@ -92,6 +98,35 @@ def main():
         check(r.get('status') == 'error' and 'Cropping the image failed' in r.get('error', ''),
               "a crop GIMP refuses did not fail the tool", r)
         print("PASS: a tool whose GIMP call is refused returns an error")
+
+        n_images = py("print(len(Gimp.get_images()))")
+        for res in (0, 1048577):
+            r = cmd('new_canvas', {'width': 10, 'height': 10, 'resolution': res})
+            check(r.get('status') == 'error' and 'resolution must be between' in r.get('error', ''),
+                  f"new_canvas accepted resolution {res}", r)
+            check(py("print(len(Gimp.get_images()))") == n_images,
+                  f"new_canvas with resolution {res} left an image behind")
+        print("PASS: new_canvas rejects an out-of-range resolution")
+
+        py("_peh_img.select_rectangle(Gimp.ChannelOps.REPLACE, 1, 1, 3, 3)", "_peh_img.clean_all()")
+        index = int(py("print(next(i for i, im in enumerate(Gimp.get_images()) "
+                       "if im.get_id() == _peh_img.get_id()))"))
+        line = {'x1': 0, 'y1': 0, 'x2': 9, 'y2': 9, 'image_index': index}
+        shape = {'x': 1, 'y': 1, 'width': 5, 'height': 5, 'image_index': index}
+        for tool, params, needle in (
+                ('draw_line', {**line, 'width': 0}, 'width must be between 1 and 10000'),
+                ('draw_line', {**line, 'width': 10001}, 'width must be between 1 and 10000'),
+                ('draw_rectangle', {**shape, 'line_width': 0}, 'line_width must be more than 0'),
+                ('draw_rectangle', {**shape, 'line_width': 2001}, 'line_width must be more than 0'),
+                ('draw_ellipse', {**shape, 'line_width': 2001}, 'line_width must be more than 0')):
+            r = cmd(tool, params)
+            check(r.get('status') == 'error' and needle in r.get('error', ''),
+                  f"{tool} accepted {params}", r)
+            check(py("print(_peh_img.is_dirty())") == "False", f"{tool} {params} changed the image")
+        b = json.loads(py("_b = Gimp.Selection.bounds(_peh_img)",
+                          "print(json.dumps([_b[2], _b[3], _b[4], _b[5]]))"))
+        check(b == [1, 1, 4, 4], "a rejected stroke changed the selection", b)
+        print("PASS: draw_line, draw_rectangle and draw_ellipse reject out-of-range widths")
         return 0
     finally:
         if made_image:
