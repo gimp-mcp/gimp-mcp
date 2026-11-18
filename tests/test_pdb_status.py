@@ -548,7 +548,7 @@ def main():
                                    set_opacity=lambda v: None,
                                    get_offsets=lambda: types.SimpleNamespace(offset_x=shadow_at["x"],
                                                                              offset_y=shadow_at["y"]),
-                                   set_offsets=lambda *a: None,
+                                   set_offsets=lambda x, y: shadow_at.update(x=x, y=y) or True,
                                    set_name=lambda n: None,
                                    has_alpha=lambda: True,
                                    get_width=lambda: 10,
@@ -560,22 +560,24 @@ def main():
     check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
           None if r["status"] == "success"
           and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur"
-                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5} for c in CALLS)
+                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5, "abyss-policy": "none"}
+                  for c in CALLS)
           else f"got {r}, calls {CALLS}")
-    # The shadow copy is padded by 3 radii before the blur, so the blur isn't cut off.
+    # The shadow copy, moved by the default (5, 5) to (35, 35), is padded by
+    # 3 radii before the blur, so the blur isn't cut off.
     resize = ("layer", "resize", shadow, 10 + 2 * 24, 10 + 2 * 24, 24, 24)
     blur = next((i for i, c in enumerate(CALLS) if c[0] == "gegl"), None)
     check("apply_drop_shadow pads the shadow layer before blurring",
           None if resize in CALLS and blur is not None and CALLS.index(resize) < blur
           else f"calls {CALLS}")
 
-    # Each side is padded only up to the canvas edge: at (95, 0) the shadow
-    # gets no padding on the right or at the top.
+    # Each side is padded only up to the canvas edge: moved from (95, 0) to
+    # (100, 5), the shadow gets no padding on the right and 5px at the top.
     shadow_at.update(x=95, y=0)
     scenario({})
     r = plugin._apply_drop_shadow({"blur_radius": 7.5})
     shadow_at.update(x=30, y=30)
-    resize = ("layer", "resize", shadow, 10 + 24, 10 + 24, 24, 0)
+    resize = ("layer", "resize", shadow, 10 + 24, 10 + 5 + 24, 24, 5)
     check("apply_drop_shadow pads each side only up to the canvas edge",
           None if r["status"] == "success" and resize in CALLS else f"got {r}, calls {CALLS}")
 

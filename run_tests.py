@@ -431,6 +431,15 @@ _s = shadow_layer()
 _a = shadow_alpha(_s, 17, 100) if _s else None
 chk('ds_spreads_past_layer_edge', _a is not None and _a > 0, {'layer': _s, 'alpha': _a})
 
+# Moved to x = -1, the shadow gets no padding on the left, but its edge must
+# still fade: outside the layer is transparent, not a repeat of its edge.
+canvas()
+t('ds_off_left', cmd('apply_drop_shadow', {'image_index': 0, 'offset_x': -1, 'offset_y': 20,
+                                           'blur_radius': 4, 'opacity': 100}))
+_s = shadow_layer()
+_a = shadow_alpha(_s, 0, 100) if _s else None
+chk('ds_unpadded_edge_fades', _a is not None and 0 < _a < 230, {'layer': _s, 'alpha': _a})
+
 # The same for a layer with a white mask: the mask copied into the shadow
 # must not hide the padding.
 canvas()

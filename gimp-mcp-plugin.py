@@ -4414,10 +4414,13 @@ class MCPPlugin(Gimp.PlugIn):
                 self._run_pdb(blur_proc, cfg)
             else:
                 # The GEGL filter takes the radius directly, the way
-                # blur and apply_gaussian_blur pass it.
+                # blur and apply_gaussian_blur pass it. Outside the layer
+                # counts as transparent: the default ("clamp") repeats the
+                # edge pixels, which keeps an unpadded edge hard.
                 self._apply_gegl_filter(image, shadow_layer, "gegl:gaussian-blur", {
                     "std-dev-x": blur_radius,
                     "std-dev-y": blur_radius,
+                    "abyss-policy": "none",
                 })
 
         shadow_layer.set_name("Drop Shadow")
