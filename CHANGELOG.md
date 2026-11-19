@@ -128,6 +128,15 @@ right command when the versions differ.
   `blue` on a grayscale layer) is an error too; it failed the same bare way. On an indexed
   layer `adjust_curves` is an error; it reported success and changed nothing. Based on
   #63 by @yonggandewo12.
+- `call_api` with `"pyGObject-eval"`, as documented, returns the values of the
+  expressions. It used to run them as statements and return empty strings. Expressions,
+  also with `"python-fu-eval"`, see the variables earlier commands set. `args` that aren't
+  `[mode, [code, ...]]` are an error and nothing runs; a string in place of the list
+  used to run each of its characters. A request with an unknown `type` and no `args` gets
+  an error naming the type; it used to fail with just `'params'` or `'args'`. Only clients
+  writing to the socket themselves can send one: the MCP server sends only types the
+  plug-in knows. Based on
+  #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

@@ -507,7 +507,12 @@ class MCPPlugin(Gimp.PlugIn):
         self.socket = None
         self.server_thread = None
         self.context = {}
-        exec("from gi.repository import Gimp", self.context)
+        # "python-fu-eval" used to evaluate in this module, so expressions could
+        # use its imports (platform.system(), GLib.MAXINT). Both modes now run
+        # in this context, so it starts with the same modules.
+        exec("from gi.repository import Gimp, GLib, GObject\n"
+             "import base64, io, json, math, os, platform, selectors, signal, socket, sys, "
+             "tempfile, threading, time, traceback", self.context)
         # One client thread per connection; a retry after a client-side timeout
         # would otherwise drive the libgimp wire protocol concurrently and crash
         self.command_lock = threading.Lock()
@@ -1205,45 +1210,16 @@ class MCPPlugin(Gimp.PlugIn):
             elif "cmds" in j:
                 a = ['python-fu-exec', j["cmds"]]
             else:
-                p = j["params"]
-                a = p['args']
-
-            # Protect against empty args list
-            if len(a) == 0:
-                return {
-                    "status": "error",
-                    "error": "No command arguments provided"
-                }
-
-            if a[0] == 'python-fu-eval':
-                if len(a) > 0:
-                    print(f"evaluating exprs: {a[1]}")
-                    vals = [str(eval(e)) for e in a[1]]
-                    results = {
-                        "status": "success",
-                        "results": vals
-                    }
-                else:
-                    results = {
-                    "status": "success",
-                    "results": "[NULL]"
-                }
-                print(f"expression result: {results}")
-                return results
-            else:
-                outputs = ["OK"]
-                if len(a) > 0:
-                    print(f"Executing commands: {a[1]}")
-                    outputs = [exec_and_get_results(c, self.context) for c in a[1]]
-                else:
-                    print("no command to execute")
-                result = {
-                    "status": "success",
-                    "results": outputs
-                }
-
-                print(f"Command result: {result}")
-                return result
+                params = j.get("params")
+                # Clients send code under other type names too (run_tests.py
+                # uses "exec"), so any request with args runs as call_api.
+                if j.get("type", "call_api") != "call_api" and not (
+                        isinstance(params, dict) and "args" in params):
+                    # This used to fail with just "'args'".
+                    return {"status": "error",
+                            "error": f"Unknown command type {j['type']!r}"}
+                a = params.get("args") if isinstance(params, dict) else None
+            return self._call_api(a)
 
         except Exception as e:
             error_msg = f"Error executing command: {str(e)}\n{traceback.format_exc()}"
@@ -1253,6 +1229,36 @@ class MCPPlugin(Gimp.PlugIn):
                 "error": str(e),
                 "traceback": traceback.format_exc()
             }
+
+    # call_api modes that evaluate expressions and return their values; any
+    # other mode runs the strings as code and returns what they print.
+    EVAL_MODES = ("pyGObject-eval", "python-fu-eval")
+
+    def _call_api(self, args):
+        """Run call_api's args: [mode, [code, ...]].
+
+        Both kinds run in the persistent context, so an expression can read a
+        variable an earlier command set. The docs named the eval mode
+        "pyGObject-eval" but the plugin only knew "python-fu-eval", so the
+        documented spelling ran the expression as a statement and returned "".
+        """
+        if (not isinstance(args, list) or len(args) != 2 or not isinstance(args[0], str)
+                or not isinstance(args[1], list)
+                or not all(isinstance(c, str) for c in args[1])):
+            # A string instead of a list used to run each of its characters.
+            return {"status": "error",
+                    "error": "args must be [mode, [code, ...]], e.g. "
+                             "[\"pyGObject-console\", [\"print(1)\"]] or "
+                             f"[\"pyGObject-eval\", [\"1 + 1\"]]; got {args!r:.200}"}
+        mode, code = args
+        if mode in self.EVAL_MODES:
+            print(f"evaluating exprs: {code}")
+            return {"status": "success", "results": [str(eval(e, self.context)) for e in code]}
+        print(f"Executing commands: {code}")
+        result = {"status": "success",
+                  "results": [exec_and_get_results(c, self.context) for c in code]}
+        print(f"Command result: {result}")
+        return result
 
     def _get_current_image_bitmap(self, params=None):
         """Get the current image as a base64-encoded bitmap with optional scaling and region selection."""

@@ -648,9 +648,8 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     """Call GIMP 3.2 API methods through PyGObject console.
 
     GIMP MCP Protocol:
-    - Use api_path="exec" to execute Python code in GIMP
-    - args[0] should be "pyGObject-console" for executing commands
-    - args[1] should be array of Python code strings to execute
+    - args[0] is "pyGObject-console" to run code, or "pyGObject-eval" to evaluate expressions
+    - args[1] is a list of Python code strings, run one after another
     - Commands execute in persistent context - imports and variables persist
     - Always call Gimp.displays_flush() after drawing operations
 
@@ -714,12 +713,17 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Full API documentation: https://developer.gimp.org/api/3.0/libgimp/
 
     Parameters:
-    - api_path: Use "exec" for Python execution
-    - args: ["pyGObject-console", ["python_code_array"]] or ["pyGObject-eval", ["expression"]]
-    - kwargs: Dictionary of keyword arguments (rarely used)
+    - api_path: Pass "exec"; the plugin doesn't read it
+    - args: ["pyGObject-console", ["code", ...]] runs each string as Python code and
+      returns what it prints, one string per entry. ["pyGObject-eval", ["expression", ...]]
+      evaluates each expression and returns its value as a string (str(value)); it can
+      read variables that earlier calls set. Any mode other than "pyGObject-eval" (or
+      "python-fu-eval") runs code like "pyGObject-console". If a string raises, the call
+      returns that error: the strings before it have run, but their output is lost.
+    - kwargs: Not used
 
     Returns:
-    - JSON string of the result or error message
+    - JSON list of the results, or "Error: " and the error message
     """
     try:
         conn = get_gimp_connection()

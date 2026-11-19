@@ -49,9 +49,8 @@ Returns comprehensive information about the GIMP installation and runtime enviro
 Execute GIMP 3.0 API methods through PyGObject console.
 
 **GIMP MCP Protocol:**
-- Use api_path="exec" to execute Python code in GIMP
-- args[0] should be "pyGObject-console" for executing commands
-- args[1] should be array of Python code strings to execute
+- args[0] is "pyGObject-console" to run code, or "pyGObject-eval" to evaluate expressions
+- args[1] is a list of Python code strings, run one after another
 - Commands execute in persistent context - imports and variables persist
 - Always call Gimp.displays_flush() after drawing operations
 
@@ -69,12 +68,14 @@ All tools return MCP-compliant data that AI assistants can process directly.
 ```
 
 ### Parameters Explanation
-- **api_path**: `"exec"` - Accesses GIMP's Procedure Database (PDB) to run a procedure
+- **api_path**: `"exec"`. The plugin doesn't read it.
 - **args**: Array with two elements:
-  - `"pyGObject-console"` - The PyGObject console procedure name
-  - `["<python_code>"]` - Array containing the Python code string to execute
-         all commands are executed in the same process context, 
-         so ["x=5","print(x)"] will work
+  - the mode: `"pyGObject-console"` runs code, `"pyGObject-eval"` evaluates expressions
+    (see [PyGObject Procedure Types](#pygobject-procedure-types))
+  - `["<python_code>", ...]` - a list of Python code strings, run one after another.
+    All commands run in the same persistent context, so `["x=5", "print(x)"]` works.
+    A single string instead of a list is an error.
+- **kwargs**: Not used.
 
 ## Tested Examples
 
@@ -86,7 +87,7 @@ All tools return MCP-compliant data that AI assistants can process directly.
 }
 ```
 
-**Result**: Returns `"hello world"` when successful.
+**Result**: Returns `"hello world\n"` when successful (what the code printed).
 
 ### Simple Expression Evaluation
 ```json
@@ -106,14 +107,19 @@ All tools return MCP-compliant data that AI assistants can process directly.
 - Python code must be properly escaped as a JSON string
 
 ### PyGObject Procedure Types
-- **`pyGObject-console`**: Executes Python code and returns output.
-- **`pyGObject-eval`**: Evaluates Python expressions and returns the actual result value.
+- **`pyGObject-console`**: Executes Python code and returns what it prints, one string per
+  code string.
+- **`pyGObject-eval`**: Evaluates Python expressions and returns each value as a string
+  (`str(value)`). Expressions see the variables earlier commands set. `"python-fu-eval"`
+  works too.
+- Any other mode runs code like `pyGObject-console`.
 
 ### Return Values
 - **pyGObject-console**: Returns command output on success, error messages on failure
-- **pyGObject-eval**: Returns the actual result of the Python expression
+- **pyGObject-eval**: Returns each expression's value as a string (`str(value)`)
 - Print statements from pyGObject-console are returned in MCP response
-- Errors will return error messages or exception details
+- Errors will return error messages or exception details. If a code string raises, the
+  strings before it have run, but their output isn't returned, and the rest don't run.
 
 ### Limitations
 - Commands execute in GIMP's PyGObject environment
