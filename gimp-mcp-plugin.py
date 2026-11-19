@@ -4471,8 +4471,16 @@ class MCPPlugin(Gimp.PlugIn):
                 raise ValueError(
                     f"'{drawable.get_name()}' is a layer group; warp a layer inside it"
                 )
-            if drawable.get_lock_content():
-                raise ValueError(f"layer '{drawable.get_name()}' has locked pixels")
+            # A group's pixel lock applies to the layers inside it too.
+            item = drawable
+            while item is not None:
+                if item.get_lock_content():
+                    raise ValueError(
+                        f"layer '{drawable.get_name()}' has locked pixels"
+                        if item is drawable else
+                        f"layer '{drawable.get_name()}' is in group '{item.get_name()}', "
+                        f"which has locked pixels")
+                item = item.get_parent()
             if not isinstance(vectors, list) or not vectors:
                 raise ValueError("vectors must be a non-empty list of {x, y, dx, dy, ...}")
 
@@ -4547,13 +4555,20 @@ class MCPPlugin(Gimp.PlugIn):
             src.link(move)
             last.connect_to("output", move, "aux")
             shadow = drawable.get_shadow_buffer()
-            out = graph.create_child("gegl:write-buffer")
-            out.set_property("buffer", shadow)
-            move.link(out)
-            out.process()
-            shadow.flush()
-            # One undo step; the selection, if any, masks the change.
-            drawable.merge_shadow(True)
+            try:
+                out = graph.create_child("gegl:write-buffer")
+                out.set_property("buffer", shadow)
+                move.link(out)
+                out.process()
+                shadow.flush()
+                # One undo step; the selection, if any, masks the change.
+                self._check_ok(drawable.merge_shadow(True), "Applying the warp")
+            finally:
+                # GIMP keeps a drawable's shadow buffer until the plug-in's
+                # procedure ends, which for this server is when it stops: free
+                # it, also when the warp failed, so each warp doesn't keep a
+                # layer-sized buffer alive.
+                drawable.free_shadow()
             drawable.update(0, 0, width, height)
 
             Gimp.displays_flush()

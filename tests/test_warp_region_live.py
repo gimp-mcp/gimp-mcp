@@ -19,7 +19,7 @@ with a black vertical line (x 30-33), that:
   the radius (gegl:warp's time grows with it), amount or radius out of range
   (a radius below 0.5 would silently become 20), a vector that
   doesn't reach the layer (even with valid vectors before it), a layer group,
-  a layer with locked pixels.
+  a layer with locked pixels, a layer inside a group with locked pixels.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). Exits 0 on pass, 1 on fail.
@@ -237,6 +237,7 @@ def main():
         bad_inputs = [
             ([], 'non-empty'),
             ([{'x': 32, 'y': 32, 'dx': 12}], 'missing dy'),
+            ([{'dx': 12, 'dy': 0}], 'missing x, y'),
             ([dict(good, dx='left')], 'must be numbers'),
             ([dict(good, dx=0, dy=0)], 'nothing to push'),
             ([dict(good, amount=0)], 'amount'),
@@ -266,9 +267,24 @@ def main():
         check(r.get('status') == 'error' and 'locked' in r.get('error', ''),
               "warping a layer with locked pixels did not fail", r)
         py("_wr_layer.set_lock_content(False)")
+        # A group's pixel lock covers the layers inside it, though the layer's
+        # own flag is off; GIMP then refuses the write, which used to be ignored.
+        py("_wr_grp = Gimp.GroupLayer.new(_wr_img, 'grp')",
+           "_wr_img.insert_layer(_wr_grp, None, 0)",
+           "_wr_img.reorder_item(_wr_layer, _wr_grp, 0)",
+           "_wr_grp.set_lock_content(True)", "_wr_img.set_selected_layers([_wr_layer])",
+           "_wr_img.clean_all()")
+        # layer_name finds only top-level layers, so select the layer instead.
+        r = warp([good])
+        check(r.get('status') == 'error' and "group 'grp'" in r.get('error', '')
+              and 'locked' in r.get('error', ''),
+              "warping a layer in a group with locked pixels did not fail", r)
+        check(py("print(_wr_img.is_dirty())") == "False",
+              "a refused warp in a locked group marked the image dirty")
         check(py("print(_wr_hash() == __import__('hashlib').sha1(_wr_before).hexdigest())")
               == "True", "a refused warp changed the layer")
-        print("PASS: bad input, a layer group and locked pixels are errors that change nothing")
+        print("PASS: bad input, a layer group and locked pixels (its own or its group's) "
+              "are errors that change nothing")
         return 0
     finally:
         if made_image:

@@ -2781,7 +2781,7 @@ def warp_region(
                       center moves about the full dx/dy
     - image_index: Which open image to edit (default: 0)
     - layer_name: Target layer; omit to use the active/top layer. A layer group
-      or a layer with locked pixels is an error.
+      or a layer with locked pixels (its own or its group's) is an error.
 
     A vector whose influence doesn't reach the layer is an error, and nothing
     is warped.
