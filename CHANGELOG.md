@@ -13,6 +13,66 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- A tool call that GIMP refuses no longer also shows an error message in GIMP. The tool
+  already returns GIMP's reason; the message duplicated it, and calls that are expected
+  to fail popped up messages too. In `call_api` code, a failed GIMP call returns False
+  or None without a message: check the result, and `Gimp.get_pdb().get_last_error()`
+  for the reason. To get GIMP's messages back until GIMP restarts, run
+  `Gimp.get_plug_in().set_pdb_error_handler(Gimp.PDBErrorHandler.INTERNAL)` through
+  `call_api`.
+- `new_canvas` rejects a `resolution` outside 1-1048576, `draw_line` a `width` outside
+  1-10000, and `draw_rectangle`/`draw_ellipse` a `line_width` outside 0-2000 (0 excluded).
+  GIMP refused these values, but the tools went on: the canvas got the default resolution
+  while the requested one was reported, and the stroke used whatever width was set before.
+- `edit_text` and `set_layer_properties` skip opening an undo group when no edits
+  are requested. Invalid opacity and font size are rejected before opening an
+  undo group, including font sizes above GIMP's 8192 limit (#148).
+- All 148 CSS color names paint the right color. Names other than the 16 basic HTML ones,
+  such as `orange`, `gold` or `cornflowerblue`, used to paint cyan (#44). Based on #54 by
+  @floraschouw.
+- A color the tools can't read returns an error naming it and leaves the image unchanged.
+  Unknown names, hex without `#` and other strings GIMP couldn't read used to paint cyan
+  and report success, and values after an `rgba()` color's fourth were ignored (#145).
+  A rejected color no longer clears GIMP's redo history.
+- An empty color (`""`) means "no color", as in `draw_line`, `draw_rectangle` and
+  `draw_ellipse`: `fill_selection` fills with the current foreground color, and
+  `edit_text` and `set_colors` leave the color unchanged. They used to paint or set cyan.
+- `fill_selection` with no `color` fills with the current foreground color. Through the
+  MCP server it used to fail; a direct plug-in request without `color` filled white.
+- `fill="none"` is transparent, like `fill="transparent"`, in `new_canvas`, `create_layer`
+  and `resize_canvas`. `resize_canvas` used to flatten the image for it.
+- `apply_drop_shadow` gives a shadow that reaches its layer's edge a soft edge there
+  too, also for a layer with a mask. The blur used to be cut off at the layer's edge, e.g.
+  for a layer that fills the canvas. Based on #62 by @gr8monk3ys.
+- `apply_drop_shadow` moves the shadow of a layer whose position is locked to its offset.
+  The shadow used to stay under the layer.
+- `apply_drop_shadow` rejects a `blur_radius` outside 0-1500 and an `opacity` outside
+  0-100. A failed drop shadow no longer leaves an extra layer in the image, and the
+  foreground color is no longer changed to the shadow color.
+- `export_web_optimized` names its files after the source image (`photo.jpg`, `photo.png`),
+  or `image_<index>` for an image that was never saved. All exports used to go to
+  `image.jpg` / `image.png`. An export that would overwrite the source file, also through a
+  symlinked folder, gets a `_web` suffix. Based on #62 by @gr8monk3ys.
+
+### Changed
+- `create_layer` and `set_layer_properties` reject unknown blend modes instead of
+  using Normal, and accept names like `hard light` and `hard-light` (#149).
+  An empty `blend_mode` leaves the mode unchanged in `set_layer_properties`.
+- Some color strings that used to paint now return an error. Use hex or
+  `rgb(r, g, b)` instead:
+  - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,
+    and Gegl reads others, such as `cmyk(0%,100%,100%,0%)`, as cyan.
+  - `rgb()` values separated partly by commas and partly by spaces, such as
+    `rgb(255, 128 0)`.
+  - Text after the closing paren, as in `rgb(1,2,3) junk`, or another word in place of
+    `rgb`, as in `rgbx(1,2,3)`.
+  - An empty value from a doubled, leading or trailing comma, as in `rgb(255,0,0,)`.
+
+### Added
+- Percentages in `rgb()` / `rgba()` colors, such as `rgb(50%, 50%, 50%)`, and the
+  space-separated form `rgb(255 128 0 / 0.5)`.
+
 ## [0.5.0] - 2026-11-18
 
 ### Changed

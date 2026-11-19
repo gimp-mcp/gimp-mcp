@@ -179,6 +179,9 @@ class FakeImage:
     def insert_layer(self, *a):
         pass
 
+    def remove_layer(self, layer):
+        CALLS.append(("image", "remove_layer", layer))
+
     def get_width(self):
         return 100
 
@@ -235,6 +238,8 @@ def install_gi_stub():
     repository = types.ModuleType("gi.repository")
 
     class Gimp:
+        MAX_IMAGE_SIZE = 524288
+
         class PlugIn:
             __gtype__ = "stub-gtype"
 
@@ -351,6 +356,11 @@ def install_gi_stub():
                 CALLS.append(("layer", "new_from_visible", image, dest_image))
                 return FakeLayer()
 
+            @staticmethod
+            def resize(layer, width, height, offx, offy):
+                CALLS.append(("layer", "resize", layer, width, height, offx, offy))
+                return True
+
         class LayerMode:
             NORMAL = 28
 
@@ -389,7 +399,9 @@ def install_gi_stub():
 
     repository.Gimp, repository.GLib, repository.GObject = Gimp, GLib, GObject
     repository.Gio = Gio
-    repository.Gegl = types.SimpleNamespace(Color=types.SimpleNamespace(new=lambda s: s))
+    # Gegl.Color is a class, as in GIMP: the plugin checks isinstance(x, Gegl.Color).
+    repository.Gegl = types.SimpleNamespace(
+        Color=type("Color", (), {"new": staticmethod(lambda s: s)}))
     gi.repository = repository
     sys.modules["gi"] = gi
     sys.modules["gi.repository"] = repository
@@ -527,24 +539,57 @@ def main():
     # the GEGL fallback when plug-in-gauss is missing, and report an error
     # when the plug-in runs and fails.
     real_resolve = plugin._resolve_layer
+    # A 10x10 shadow at (30, 30) on the fake 100x100 canvas.
+    shadow_at = {"x": 30, "y": 30}
     shadow = types.SimpleNamespace(set_lock_alpha=lambda v: None,
+                                   set_lock_content=lambda v: None,
+                                   set_lock_position=lambda v: None,
+                                   get_mask=lambda: None,
                                    set_opacity=lambda v: None,
-                                   get_offsets=lambda: types.SimpleNamespace(offset_x=0, offset_y=0),
-                                   set_offsets=lambda *a: None,
-                                   set_name=lambda n: None)
+                                   get_offsets=lambda: types.SimpleNamespace(offset_x=shadow_at["x"],
+                                                                             offset_y=shadow_at["y"]),
+                                   set_offsets=lambda x, y: shadow_at.update(x=x, y=y) or True,
+                                   set_name=lambda n: None,
+                                   has_alpha=lambda: True,
+                                   get_width=lambda: 10,
+                                   get_height=lambda: 10,
+                                   is_valid=lambda: True)
     plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(copy=lambda: shadow)
     scenario({})
     r = plugin._apply_drop_shadow({"blur_radius": 7.5})
     check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
           None if r["status"] == "success"
           and any(c[0] == "gegl" and c[1] == "gegl:gaussian-blur"
-                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5} for c in CALLS)
+                  and c[2] == {"std-dev-x": 7.5, "std-dev-y": 7.5, "abyss-policy": "none"}
+                  for c in CALLS)
           else f"got {r}, calls {CALLS}")
+    # The shadow copy, moved by the default (5, 5) to (35, 35), is padded by
+    # 3 radii before the blur, so the blur isn't cut off.
+    resize = ("layer", "resize", shadow, 10 + 2 * 24, 10 + 2 * 24, 24, 24)
+    blur = next((i for i, c in enumerate(CALLS) if c[0] == "gegl"), None)
+    check("apply_drop_shadow pads the shadow layer before blurring",
+          None if resize in CALLS and blur is not None and CALLS.index(resize) < blur
+          else f"calls {CALLS}")
+
+    # Each side is padded only up to the canvas edge: moved from (95, 0) to
+    # (100, 5), the shadow gets no padding on the right and 5px at the top.
+    shadow_at.update(x=95, y=0)
+    scenario({})
+    r = plugin._apply_drop_shadow({"blur_radius": 7.5})
+    shadow_at.update(x=30, y=30)
+    resize = ("layer", "resize", shadow, 10 + 24, 10 + 5 + 24, 24, 5)
+    check("apply_drop_shadow pads each side only up to the canvas edge",
+          None if r["status"] == "success" and resize in CALLS else f"got {r}, calls {CALLS}")
 
     scenario({"plug-in-gauss": (EXECUTION_ERROR, None)})
     r = plugin._apply_drop_shadow({})
     check("apply_drop_shadow reports an error when plug-in-gauss fails",
           None if r["status"] == "error" else f"got {r}")
+    removed = ("image", "remove_layer", shadow)
+    check("apply_drop_shadow removes the shadow layer when the blur fails",
+          None if ("run", "plug-in-gauss") in CALLS and removed in CALLS
+          and CALLS.index(("run", "plug-in-gauss")) < CALLS.index(removed)
+          else f"calls {CALLS}")
     plugin._resolve_layer = real_resolve
 
     scenario({})

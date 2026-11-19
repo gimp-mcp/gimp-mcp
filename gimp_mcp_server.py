@@ -355,7 +355,7 @@ def new_canvas(
     - fill: Fill color for the background layer. Any CSS color name or
             hex string: "white" (default), "black", "transparent",
             "#FF5733", "rgb(100,200,50)", etc.
-    - resolution: DPI resolution (default: 72)
+    - resolution: DPI resolution, 1-1048576 (default: 72)
 
     Returns:
     - image_id: internal GIMP image ID
@@ -700,12 +700,17 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Build colors from hex, e.g. Gegl.Color.new("#ff8000"): Gegl reads rgb(...)/rgba(...) values as linear, so rgb(255, ...) clamps to white
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
+    - A GIMP call that fails doesn't raise or show a message in GIMP: it returns False or
+      None (Procedure.run() returns its status first). Check the result, and read GIMP's
+      reason with Gimp.get_pdb().get_last_error()
 
     GIMP 3.2 API Changes:
     - Use Gimp.get_images() instead of deprecated Gimp.list_images()
     - Use image.get_layers() instead of Gimp.get_active_layer()
     - gimpfu module not available in GIMP 3.2
-    - Colors created with Gegl.Color.new('color_name')
+    - Colors: Gegl.Color.new("#ff8000"). Besides hex, Gegl.Color.new() knows only the 16 basic
+      HTML color names (red, navy, ...) and "transparent"/"none"; it turns any other name,
+      such as "orange", into cyan without an error, so use hex
     - Full API documentation: https://developer.gimp.org/api/3.0/libgimp/
 
     Parameters:
@@ -1749,7 +1754,9 @@ def create_layer(
     - fill: Initial fill — "transparent" (default), "white", "black", or any CSS color;
       it covers the whole layer, whatever the selection
     - opacity: Layer opacity 0-100 (default 100)
-    - blend_mode: GIMP layer mode name — "NORMAL" (default), "MULTIPLY", "SCREEN", etc.
+    - blend_mode: NORMAL (default), MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE,
+      BURN, HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY,
+      or DISSOLVE. Names are case-insensitive and accept spaces or hyphens for underscores.
     - position: 0 or more = index among the image's top-level layers, counted from
       the top (0 = top); a value past the bottom puts the layer at the bottom.
       -1 (default) = directly above the selected layer, inside its group if it is in
@@ -1895,7 +1902,10 @@ def set_layer_properties(
     Parameters:
     - layer_name / layer_index: Identify the layer (defaults to active layer)
     - opacity: New opacity 0-100 (omit to leave unchanged)
-    - blend_mode: New GIMP layer mode name (omit to leave unchanged)
+    - blend_mode: NORMAL, MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE, BURN,
+      HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY, or
+      DISSOLVE. Names are case-insensitive and accept spaces or hyphens for underscores.
+      Omit or pass an empty string to leave unchanged.
     - visible: True/False visibility (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
@@ -2067,8 +2077,11 @@ def fill_selection(
     whole layer.
 
     Parameters:
-    - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
-    - fill_type: Fill type override: "foreground", "background", or "transparent"
+    - color: Fill color as CSS name, hex, or rgb() string. Used unless fill_type is
+             "background", "pattern" or "transparent"; omit it to fill with the
+             current foreground color
+    - fill_type: "foreground" (default), "background", "pattern", or "transparent"
+                 (clears the selected pixels)
     - image_index: Target image index (default 0)
     - layer_name: Target layer; defaults to active layer
 
@@ -2134,7 +2147,7 @@ def draw_line(
     - x1, y1: Start point
     - x2, y2: End point
     - color: Stroke color (CSS / hex / rgb); uses current foreground if omitted
-    - width: Stroke width in pixels (default 2.0)
+    - width: Stroke width in pixels, 1-10000 (default 2.0)
     - tool: "pencil" (default, hard edge) or "paintbrush" (soft edge)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
@@ -2174,7 +2187,7 @@ def draw_rectangle(
     - x, y: Top-left corner
     - width, height: Rectangle dimensions
     - color: Stroke color; uses current foreground if omitted
-    - line_width: Stroke width in pixels (default 2.0)
+    - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2213,7 +2226,7 @@ def draw_ellipse(
     - x, y: Top-left corner of the bounding box
     - width, height: Bounding box dimensions
     - color: Stroke color; uses current foreground if omitted
-    - line_width: Stroke width in pixels (default 2.0)
+    - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2408,7 +2421,7 @@ def edit_text(
 
     Parameters:
     - layer_name: Name of the text layer to edit
-    - text: New text content (omit to leave unchanged)
+    - text: New text content (omit to leave unchanged; pass an empty string to clear it)
     - font: New font name, as listed by list_fonts (omit, or pass an empty name,
       to leave unchanged). Common GIMP 2 aliases resolve to their GIMP 3 names; an unknown name falls
       back to a default font and adds a warning to the result.
