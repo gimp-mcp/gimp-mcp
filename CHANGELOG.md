@@ -76,6 +76,17 @@ right command when the versions differ.
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs
   said; with `autocrop`, the image's new `width` and `height`. Based on #63 by
   @yonggandewo12.
+- `select_by_color` with a `threshold` outside 0-255 (such as 300 or -5) is an error and
+  the selection is left as it was. GIMP ignored such a value and silently used its own
+  current threshold. Clients writing to the plugin's socket directly also get an error
+  for a fraction such as 1.9, which was cut to 1.
+- `select_by_color` always compares whole colors. A sample criterion that `call_api` code
+  had left set (such as `Gimp.SelectCriterion.RGB_RED`) made it compare one channel only,
+  so selecting red also selected white.
+- `select_by_color` returns an error when no pixel of the layer matches the color, and
+  leaves the selection as it was. It used to report success, and with `replace` the
+  selection was silently gone. It now returns `has_selection` and the selection's `x`, `y`,
+  `width` and `height`. Based on #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

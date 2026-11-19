@@ -3345,7 +3345,12 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             color_str   = params.get("color", "white")
-            threshold   = int(params.get("threshold", 15))
+            raw_threshold = params.get("threshold", 15)
+            # GIMP ignores a threshold outside 0-255 (the context keeps its
+            # own), and int() truncated 1.9 to 1.
+            threshold   = self._whole(raw_threshold, "threshold")
+            if not 0 <= threshold <= 255:
+                raise ValueError(f"threshold must be between 0 and 255, got {raw_threshold!r}")
             operation   = params.get("operation", "replace")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
@@ -3357,25 +3362,74 @@ class MCPPlugin(Gimp.PlugIn):
                 raise RuntimeError(
                     "PDB procedure 'gimp-image-select-color' not found"
                 )
+
+            def select(img, drw, operation):
+                cfg = proc.create_config()
+                cfg.set_property("image",     img)
+                cfg.set_property("drawable",  drw)
+                cfg.set_property("color",     color)
+                cfg.set_property("operation", operation)
+                self._run_pdb(proc, cfg)
+
             Gimp.context_push()
             try:
                 Gimp.context_set_antialias(True)
                 Gimp.context_set_feather(False)
-                Gimp.context_set_sample_threshold_int(threshold)
+                self._check_ok(Gimp.context_set_sample_threshold_int(threshold),
+                               "Setting the threshold")
                 Gimp.context_set_sample_merged(False)
                 Gimp.context_set_sample_transparent(False)
-                cfg = proc.create_config()
-                cfg.set_property("image",     image)
-                cfg.set_property("drawable",  drawable)
-                cfg.set_property("color",     color)
-                cfg.set_property("operation", op)
-                self._run_pdb(proc, cfg)
+                # Compare whole colors: a criterion left by call_api (say
+                # RGB_RED) would match white when selecting red.
+                Gimp.context_set_sample_criterion(Gimp.SelectCriterion.COMPOSITE)
+                # Try the match on a copy first: if nothing matches, a replace
+                # would already have dropped the user's selection, and the image
+                # would be marked as changed.
+                if not self._color_matches_any(image, drawable, select):
+                    raise RuntimeError(
+                        f"No pixels in layer '{drawable.get_name()}' matched "
+                        f"'{color_str}' at threshold {threshold}; the selection is "
+                        f"unchanged. Raise the threshold or pick a color that is "
+                        f"in the layer (get_pixel_color reads one)."
+                    )
+                select(image, drawable, op)
             finally:
                 Gimp.context_pop()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
+            # Subtract or intersect can leave nothing selected even though the
+            # color matched; that's the result asked for, so it isn't an error.
+            results = {"status": "success", "has_selection": bool(non_empty)}
+            if non_empty:
+                results.update(x=x1, y=y1, width=x2 - x1, height=y2 - y1)
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    @staticmethod
+    def _color_matches_any(image, drawable, select):
+        """Whether select(img, drw, REPLACE) selects anything, run on a copy.
+
+        The copy keeps the original's selection, undo history and dirty flag
+        untouched. The drawable is found in the copy by its position in the
+        layer tree (duplicate() doesn't keep tattoos).
+        """
+        path, item = [], drawable
+        while item is not None:
+            parent = item.get_parent()
+            siblings = parent.get_children() if parent else image.get_layers()
+            path.append([s.get_id() for s in siblings].index(item.get_id()))
+            item = parent
+        dup = image.duplicate()
+        try:
+            target, siblings = None, dup.get_layers()
+            for i in reversed(path):
+                target = siblings[i]
+                siblings = target.get_children() if target.is_group() else []
+            select(dup, target, Gimp.ChannelOps.REPLACE)
+            return bool(Gimp.Selection.bounds(dup)[1])
+        finally:
+            dup.delete()
 
     def _select_all(self, params):
         """Select entire canvas."""

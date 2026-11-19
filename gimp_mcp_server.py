@@ -1623,12 +1623,17 @@ def select_by_color(
 
     Parameters:
     - color: Target color as CSS name, hex (#rrggbb), or rgb() string
-    - threshold: Color similarity tolerance 0-255 (default 15)
+    - threshold: Color similarity tolerance, a whole number 0-255 (default 15)
     - operation: "replace" (default), "add", "subtract", "intersect"
     - image_index: Target image index (default 0)
     - layer_name: Layer to sample from; defaults to active layer
 
-    Returns status dict.
+    Returns an error, and leaves the selection as it was, when no pixel of the
+    layer matches the color.
+
+    Returns: {status, has_selection, x, y, width, height} — the bounds of the
+    resulting selection; x/y/width/height are left out when subtract or
+    intersect leaves nothing selected.
     """
     try:
         conn = get_gimp_connection()
