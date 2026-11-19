@@ -92,7 +92,15 @@ right command when the versions differ.
   with an offset, and an active selection limits the change. A vector with no push or a
   push longer than the layer's diagonal plus the radius, an `amount` outside 0-1 (0
   excluded), a `radius` outside 0.5-5000, a vector that doesn't reach the layer, a layer
-  group or a layer with locked pixels is an error, and nothing is warped. Based on #63 by @yonggandewo12.
+  group or a layer with locked pixels is an error, and nothing is warped. Based on #63 by
+  @yonggandewo12.
+- `batch_resize` without `width`, `height` or `scale_factor` returns an error. It used to
+  "resize" every open image to its own size, mark it as changed and report success.
+  A size of 0 or less, a fractional `width`/`height`, no open images, or a result above
+  GIMP's 524288-pixel limit for any image is an error too, and no image is resized; such a
+  limit used to stop the batch halfway. An image already at its target size is left
+  untouched, and each result says whether the image was `scaled`. Based on #63 by
+  @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

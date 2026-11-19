@@ -4937,23 +4937,55 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _batch_resize(self, params):
-        """Resize all open images."""
+        """Resize all open images.
+
+        Every target size is worked out and checked before any image is
+        scaled, so bad input or a size GIMP can't make leaves all images as
+        they were. An image already at its target size isn't touched (scaling
+        it would still mark it as changed).
+        """
         try:
-            width           = params.get("width", None)
-            height          = params.get("height", None)
-            scale_factor    = params.get("scale_factor", None)
+            def number(name, integer):
+                value = params.get(name)
+                if value is None:
+                    return None
+                if isinstance(value, bool):
+                    raise ValueError(f"{name} must be a number, got {value!r}")
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be a number, got {value!r}") from None
+                if not math.isfinite(num) or num <= 0:
+                    raise ValueError(f"{name} must be above 0, got {value!r}")
+                if integer:
+                    if num != int(num):
+                        raise ValueError(f"{name} must be a whole number of pixels, "
+                                         f"got {value!r}")
+                    return int(num)
+                return num
+
+            width           = number("width", True)
+            height          = number("height", True)
+            scale_factor    = number("scale_factor", False)
             maintain_aspect = bool(params.get("maintain_aspect", True))
-            images  = Gimp.get_images()
-            results = []
+            if width is None and height is None and scale_factor is None:
+                # Without this every image was "resized" to its own size and
+                # the tool reported success.
+                raise ValueError("batch_resize needs width, height or scale_factor")
+            images = Gimp.get_images()
+            if not images:
+                raise ValueError("no images are open")
+
+            plan = []
             for img in images:
                 src_w = img.get_width()
                 src_h = img.get_height()
                 if scale_factor is not None:
-                    new_w = max(1, int(src_w * float(scale_factor)))
-                    new_h = max(1, int(src_h * float(scale_factor)))
+                    new_w = max(1, int(src_w * scale_factor))
+                    new_h = max(1, int(src_h * scale_factor))
                 else:
-                    tw = int(width  or src_w)
-                    th = int(height or src_h)
+                    tw = width  or src_w
+                    th = height or src_h
                     if maintain_aspect:
                         if width and not height:
                             new_w = tw
@@ -4971,8 +5003,27 @@ class MCPPlugin(Gimp.PlugIn):
                                 new_h = max(1, int(tw / aspect))
                     else:
                         new_w, new_h = tw, th
-                self._check_ok(img.scale(new_w, new_h), f"Scaling image {img.get_id()}")
-                results.append({"image_id": img.get_id(), "old_width": src_w, "old_height": src_h, "new_width": new_w, "new_height": new_h})
+                if new_w > Gimp.MAX_IMAGE_SIZE or new_h > Gimp.MAX_IMAGE_SIZE:
+                    raise ValueError(
+                        f"image {img.get_id()} would be {new_w}x{new_h}, above GIMP's "
+                        f"limit of {Gimp.MAX_IMAGE_SIZE}; no image was resized"
+                    )
+                plan.append((img, src_w, src_h, new_w, new_h))
+
+            results = []
+            for img, src_w, src_h, new_w, new_h in plan:
+                scaled = (new_w, new_h) != (src_w, src_h)
+                if scaled and not img.scale(new_w, new_h):
+                    done = [r["image_id"] for r in results if r["scaled"]]
+                    raise RuntimeError(
+                        f"Scaling image {img.get_id()} failed: "
+                        f"{Gimp.get_pdb().get_last_error()}; "
+                        + (f"images {done} were already resized" if done
+                           else "no image was resized")
+                    )
+                results.append({"image_id": img.get_id(), "old_width": src_w,
+                                "old_height": src_h, "new_width": new_w,
+                                "new_height": new_h, "scaled": scaled})
             Gimp.displays_flush()
             return {"status": "success", "results": {"results": results, "count": len(results)}}
         except Exception as e:

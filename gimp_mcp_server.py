@@ -2821,11 +2821,20 @@ def batch_resize(
     """Resize all open images to a common target size.
 
     Parameters:
-    - width / height: Target dimensions in pixels (provide one or both)
-    - scale_factor: Proportional scale (e.g. 0.5 = 50%); overrides width/height if set
-    - maintain_aspect: Preserve aspect ratio when only one dimension is given (default True)
+    - width / height: Target dimensions in whole pixels, above 0 (provide one or both)
+    - scale_factor: Proportional scale, above 0 (e.g. 0.5 = 50%); overrides
+      width/height if set
+    - maintain_aspect: Preserve aspect ratio (default True). With only one
+      dimension the other follows; with both, each image fits inside
+      width x height.
 
-    Returns: {results: [{image_id, old_width, old_height, new_width, new_height}], count}
+    One of width, height or scale_factor is required. Bad values, no open
+    images, or a result above GIMP's 524288-pixel limit for any image are
+    errors, and no image is resized. An image already at its target size is
+    left untouched (scaled: false).
+
+    Returns: {results: [{image_id, old_width, old_height, new_width, new_height,
+    scaled}], count}
     """
     try:
         conn = get_gimp_connection()
