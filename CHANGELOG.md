@@ -63,8 +63,9 @@ right command when the versions differ.
   @yonggandewo12.
 - `convert_color_mode` converts to `INDEXED`. It used to fail with an error about
   `NO_DITHER`. `num_colors` must be 1-256, and an image with layer groups gets an error
-  asking to merge them first, as GIMP won't index those from a script. A conversion GIMP
-  refuses is reported as an error. Converting an image to the mode it already has
+  asking to merge them first, as GIMP won't index those from a script. So does an image
+  that isn't 8-bit non-linear, without marking it as changed. A conversion GIMP refuses
+  is reported as an error. Converting an image to the mode it already has
   doesn't mark it as changed; `RGBA` and `GRAYA` then only add alpha. Based on #63 by
   @yonggandewo12.
 - `get_image_metadata` reports each layer's `is_group` and `layer_type` (`RGB`, `RGBA`,

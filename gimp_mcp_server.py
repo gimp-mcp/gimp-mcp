@@ -3043,7 +3043,9 @@ def convert_color_mode(
             add an alpha channel to every layer. An image already in the
             requested mode is left as it is.
     - num_colors: Number of colors for INDEXED mode, 1-256 (default 256), no dithering.
-                  INDEXED needs an 8-bit image without layer groups.
+                  INDEXED needs an 8-bit non-linear image without layer groups.
+                  An image that is already INDEXED keeps its palette; to use
+                  fewer colors, convert it to RGB first.
     - image_index: Target image index (default 0)
 
     Returns status dict.

@@ -9,8 +9,11 @@ which doesn't exist (the value is NONE). Checks that:
   GRAY and would now be an error);
 - RGBA and GRAYA convert and add alpha to every layer, including layers inside
   a group;
-- an out-of-range num_colors, an unknown mode, and an image with a layer group
-  (which GIMP's PDB refuses to index) return an error and leave the image as it was.
+- an out-of-range num_colors, an unknown mode, an image with a layer group
+  (which GIMP's PDB refuses to index) and a 16-bit image (GIMP indexes only
+  8-bit non-linear ones) return an error and leave the image as it was, not
+  marked as changed;
+- mode names ignore case and surrounding spaces.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). Exits 0 on pass, 1 on fail.
@@ -116,8 +119,22 @@ def main():
         py("_ccm_img.remove_layer(_g)")
         print("PASS: INDEXED with a layer group is refused with a clear error")
 
+        # GIMP indexes only 8-bit non-linear images; its refusal used to come
+        # inside the undo group and leave the image marked as changed.
+        py("_ccm_img.convert_precision(Gimp.Precision.U16_NON_LINEAR)", "_ccm_img.clean_all()")
         r = convert('INDEXED', num_colors=4)
-        check(r.get('status') == 'success', "INDEXED failed", r)
+        check(r.get('status') == 'error' and '8-bit non-linear' in r.get('error', '')
+              and 'u16-non-linear' in r.get('error', ''),
+              "INDEXED on a 16-bit image did not explain the refusal", r)
+        check(base_type() == 'rgb', "the refused conversion changed the image", base_type())
+        check(py("print(_ccm_img.is_dirty())") == "False",
+              "the refused conversion marked the image dirty")
+        py("_ccm_img.convert_precision(Gimp.Precision.U8_NON_LINEAR)")
+        print("PASS: INDEXED on a 16-bit image is refused and leaves it unchanged")
+
+        r = convert(' indexed ', num_colors=4)
+        check(r.get('status') == 'success' and r['results'].get('mode') == 'INDEXED',
+              "INDEXED (as ' indexed ') failed", r)
         check(base_type() == 'indexed', "the image is not indexed", base_type())
         ncolors = int(py("print(_ccm_img.get_palette().get_color_count())"))
         check(1 <= ncolors <= 4, "the palette does not have at most 4 colors", ncolors)

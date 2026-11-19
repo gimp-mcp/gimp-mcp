@@ -5359,11 +5359,9 @@ class MCPPlugin(Gimp.PlugIn):
         """Convert image color mode."""
         try:
             image_index = int(params.get("image_index", 0))
-            mode        = params.get("mode", "RGB").upper()
+            mode = self._option("mode", params.get("mode", "RGB"),
+                                {m: m for m in ("RGB", "RGBA", "GRAY", "GRAYA", "INDEXED")})
             num_colors  = int(params.get("num_colors", 256))
-            if mode not in ("RGB", "RGBA", "GRAY", "GRAYA", "INDEXED"):
-                return {"status": "error",
-                        "error": f"Unknown mode: {mode}. Use RGB, RGBA, GRAY, GRAYA or INDEXED"}
             if mode == "INDEXED" and not 1 <= num_colors <= 256:
                 return {"status": "error",
                         "error": f"num_colors must be between 1 and 256, got {num_colors}"}
@@ -5386,6 +5384,15 @@ class MCPPlugin(Gimp.PlugIn):
                 return {"status": "error",
                         "error": "GIMP can't convert an image with layer groups to INDEXED "
                                  "from a script. Merge the groups or flatten the image first."}
+            if (convert and mode == "INDEXED"
+                    and image.get_precision() != Gimp.Precision.U8_NON_LINEAR):
+                # Checked here: GIMP's refusal inside the undo group below would
+                # leave the image marked as changed.
+                return {"status": "error",
+                        "error": f"INDEXED needs an 8-bit non-linear image; this one is "
+                                 f"{image.get_precision().value_nick!r}. Convert it first "
+                                 f"(call_api: image.convert_precision("
+                                 f"Gimp.Precision.U8_NON_LINEAR))."}
             if not convert and not no_alpha:
                 # Nothing to do; an empty undo group would still mark the image dirty.
                 return {"status": "success", "results": {"status": "success", "mode": mode}}
