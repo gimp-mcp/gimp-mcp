@@ -144,6 +144,13 @@ right command when the versions differ.
   (`gimp-text-fontname`) or GEGL operations that can't be applied to a layer
   (`gegl:linear-gradient`), and the protocol docs no longer recommend
   `image.get_active_layer()`, which doesn't exist. Based on #63 by @yonggandewo12.
+- An `image_index` or `layer_index` that isn't a whole number 0 or more is an error, and
+  nothing changes. A negative one used to count from the end: `image_index=-1` acted on
+  another open image, and `layer_index=-1` on the bottom layer, so `rename_layer`,
+  `delete_layer`, `set_layer_properties` or `reorder_layer` changed the wrong layer and
+  reported success. `-0.5`, `1.9` and `true` picked a nearby index the same way, and a
+  bad `layer_index` was ignored when a layer name was also given. Based on #63 by
+  @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

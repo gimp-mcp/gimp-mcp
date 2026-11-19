@@ -25,6 +25,7 @@ import tempfile
 import os
 import math
 import platform
+import re
 import selectors
 import signal
 
@@ -1326,16 +1327,10 @@ class MCPPlugin(Gimp.PlugIn):
             scaled_to_width = region.get("max_width")  # Region scaling uses max_width/max_height
             scaled_to_height = region.get("max_height")
 
-            # Select the requested image (default 0 = most recently active);
-            # int() would turn -0.5 into a valid 0, so require an integer
-            if isinstance(image_index, bool) or not isinstance(image_index, int) or image_index < 0:
-                return {
-                    "status": "error",
-                    "error": f"image_index must be a non-negative integer, got {image_index!r}"
-                }
+            # Select the requested image (default 0 = most recently active)
             try:
-                original_image = self._get_image(image_index)
-            except RuntimeError as e:
+                original_image = self._get_image(self._index(image_index, "image_index"))
+            except (RuntimeError, ValueError) as e:
                 return {
                     "status": "error",
                     "error": str(e)
@@ -2386,6 +2381,7 @@ class MCPPlugin(Gimp.PlugIn):
 
     def _get_image(self, image_index):
         """Return the image at image_index from Gimp.get_images(), raise if none open."""
+        image_index = self._index(image_index, "image_index")
         images = Gimp.get_images()
         if not images:
             raise RuntimeError("No images are currently open in GIMP")
@@ -2454,7 +2450,11 @@ class MCPPlugin(Gimp.PlugIn):
         return item
 
     def _resolve_layer(self, image, layer_name, layer_index):
-        """Resolve a layer by name, index, or fall back to the active layer."""
+        """Resolve a layer by name, index, or fall back to the selected layer."""
+        # Checked even when a name is given, which wins: a bad index is a
+        # mistake to report, not to ignore.
+        if layer_index is not None:
+            layer_index = self._index(layer_index, "layer_index")
         if layer_name is not None:
             layers = image.get_layers()
             for layer in layers:
@@ -2473,6 +2473,26 @@ class MCPPlugin(Gimp.PlugIn):
                 raise RuntimeError("No layers in image")
             return layers[0]
         return layer
+
+    @staticmethod
+    def _index(value, name):
+        """Return value as a list index; raise unless it is a whole number, 0 or more.
+
+        Indexes used to go through int() and Python's indexing, so a bad one
+        silently picked a valid one: -1 the last image or bottom layer, -0.5
+        and True a nearby index, 1.9 index 1. A string of digits is accepted,
+        as int() accepted it.
+        """
+        index = None
+        if isinstance(value, int) and not isinstance(value, bool):
+            index = value
+        elif isinstance(value, float) and value.is_integer():
+            index = int(value)
+        elif isinstance(value, str) and re.fullmatch(r"\s*-?\d+\s*", value):
+            index = int(value)
+        if index is None or index < 0:
+            raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+        return index
 
     @staticmethod
     def _option(name, value, options):
@@ -2692,7 +2712,7 @@ class MCPPlugin(Gimp.PlugIn):
             file_path = params.get("file_path", "")
             if not file_path:
                 return {"status": "error", "error": "file_path is required"}
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name = (params.get("layer_name")
                           or os.path.splitext(os.path.basename(file_path))[0])
             position = int(params.get("position", 0))
@@ -2788,7 +2808,7 @@ class MCPPlugin(Gimp.PlugIn):
         """Save image as XCF."""
         try:
             from gi.repository import Gio
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             file_path = params.get("file_path", "")
             image = self._get_image(image_index)
             gio_file = Gio.File.new_for_path(file_path)
@@ -2809,7 +2829,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _export_image(self, params):
         """Export image to raster format."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             file_path   = params.get("file_path", "")
             fmt         = params.get("format", "png")
             quality     = int(params.get("quality", 90))
@@ -2845,7 +2865,8 @@ class MCPPlugin(Gimp.PlugIn):
 
             targets = [(i, img) for i, img in enumerate(images)]
             if image_index is not None:
-                targets = [(image_index, images[int(image_index)])]
+                image_index = self._index(image_index, "image_index")
+                targets = [(image_index, self._get_image(image_index))]
 
             os.makedirs(output_dir, exist_ok=True)
             exported = []
@@ -2881,7 +2902,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _auto_levels(self, params):
         """Auto-stretch levels on a drawable."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
@@ -2978,7 +2999,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "blue":  Gimp.HistogramChannel.BLUE,
                 "alpha": Gimp.HistogramChannel.ALPHA,
             }
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             preset      = params.get("preset", "s_curve")
             custom_pts  = params.get("points", None)
@@ -3031,7 +3052,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _adjust_brightness_contrast(self, params):
         """Adjust brightness and contrast."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             brightness  = float(params.get("brightness", 0))
             contrast    = float(params.get("contrast", 0))
@@ -3072,7 +3093,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "blue":    Gimp.HueRange.BLUE,
                 "magenta": Gimp.HueRange.MAGENTA,
             }
-            image_index  = int(params.get("image_index", 0))
+            image_index  = self._index(params.get("image_index", 0), "image_index")
             layer_name   = params.get("layer_name", None)
             hue          = float(params.get("hue", 0))
             saturation   = float(params.get("saturation", 0))
@@ -3108,7 +3129,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "midtones":   1,
                 "highlights": 2,
             }
-            image_index    = int(params.get("image_index", 0))
+            image_index    = self._index(params.get("image_index", 0), "image_index")
             layer_name     = params.get("layer_name", None)
             cyan_red       = float(params.get("cyan_red", 0))
             magenta_green  = float(params.get("magenta_green", 0))
@@ -3138,7 +3159,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _sharpen(self, params):
         """Sharpen using unsharp mask."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             amount      = float(params.get("amount", 50.0))
             radius      = float(params.get("radius", 3.0))
@@ -3173,7 +3194,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _blur(self, params):
         """Gaussian blur."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             radius_x    = float(params.get("radius_x", 5.0))
             radius_y    = float(params.get("radius_y", 5.0))
@@ -3206,7 +3227,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _denoise(self, params):
         """Noise reduction."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             strength    = int(params.get("strength", 50))
             image    = self._get_image(image_index)
@@ -3234,7 +3255,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "average":    Gimp.DesaturateMode.AVERAGE,
                 "lightness":  Gimp.DesaturateMode.LIGHTNESS,
             }
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             mode_str    = params.get("mode", "luminosity")
             image    = self._get_image(image_index)
@@ -3257,7 +3278,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _invert_colors(self, params):
         """Invert all colors in a layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
@@ -3282,7 +3303,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _scale_image(self, params):
         """Scale image to exact dimensions."""
         try:
-            image_index   = int(params.get("image_index", 0))
+            image_index   = self._index(params.get("image_index", 0), "image_index")
             width         = int(params.get("width"))
             height        = int(params.get("height"))
             interpolation = params.get("interpolation", "cubic")
@@ -3297,7 +3318,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _scale_to_fit(self, params):
         """Scale image to fit within a bounding box preserving aspect ratio."""
         try:
-            image_index   = int(params.get("image_index", 0))
+            image_index   = self._index(params.get("image_index", 0), "image_index")
             max_width     = int(params.get("max_width"))
             max_height    = int(params.get("max_height"))
             interpolation = params.get("interpolation", "cubic")
@@ -3322,7 +3343,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _crop_to_selection(self, params):
         """Crop image to selection bounds."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             autocrop    = bool(params.get("autocrop", False))
             image = self._get_image(image_index)
             if not autocrop:
@@ -3355,7 +3376,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _crop_to_rect(self, params):
         """Crop image to explicit rectangle."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             x      = int(params.get("x", 0))
             y      = int(params.get("y", 0))
             width  = int(params.get("width"))
@@ -3374,7 +3395,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _rotate_image(self, params):
         """Rotate image by angle."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             angle       = float(params.get("angle", 90))
             if not math.isfinite(angle):
                 raise ValueError(f"angle must be a finite number, got {angle!r}")
@@ -3542,7 +3563,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _flip_image(self, params):
         """Flip image horizontally or vertically."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             direction   = params.get("direction", "horizontal")
             orient = self._option("direction", direction, {
                 "horizontal": Gimp.OrientationType.HORIZONTAL,
@@ -3563,7 +3584,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _resize_canvas(self, params):
         """Resize canvas without scaling content."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             new_w  = int(params.get("width"))
             new_h  = int(params.get("height"))
             anchor = params.get("anchor", "center")
@@ -3613,7 +3634,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_rectangle(self, params):
         """Create a rectangular selection."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             x       = int(params.get("x", 0))
             y       = int(params.get("y", 0))
             width   = int(params.get("width"))
@@ -3633,7 +3654,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_ellipse(self, params):
         """Create an elliptical selection."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             x       = int(params.get("x", 0))
             y       = int(params.get("y", 0))
             width   = int(params.get("width"))
@@ -3653,7 +3674,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_by_color(self, params):
         """Select by color similarity."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             color_str   = params.get("color", "white")
             raw_threshold = params.get("threshold", 15)
@@ -3745,7 +3766,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_all(self, params):
         """Select entire canvas."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             Gimp.Selection.all(image)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
@@ -3755,7 +3776,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_none(self, params):
         """Remove all selections."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             Gimp.Selection.none(image)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
@@ -3765,7 +3786,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _invert_selection(self, params):
         """Invert selection."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             Gimp.Selection.invert(image)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
@@ -3775,7 +3796,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _modify_selection(self, params):
         """Grow/shrink/feather/border/sharpen selection."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             operation   = params.get("operation", "grow").lower()
             amount      = float(params.get("amount", 0))
             image = self._get_image(image_index)
@@ -3832,7 +3853,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _create_layer(self, params):
         """Create and insert a new layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             name        = params.get("name", "New Layer")
             opacity     = float(params.get("opacity", 100))
             blend_mode  = params.get("blend_mode", "NORMAL")
@@ -3910,7 +3931,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _duplicate_layer(self, params):
         """Duplicate a layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
@@ -3930,11 +3951,11 @@ class MCPPlugin(Gimp.PlugIn):
     def _delete_layer(self, params):
         """Delete a layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             layer_index = params.get("layer_index", None)
             if layer_index is not None:
-                layer_index = int(layer_index)
+                layer_index = self._index(layer_index, "layer_index")
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
             image.undo_group_start()
@@ -3950,12 +3971,12 @@ class MCPPlugin(Gimp.PlugIn):
     def _rename_layer(self, params):
         """Rename a layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             old_name    = params.get("old_name", None)
             layer_index = params.get("layer_index", None)
             new_name    = params.get("new_name", "")
             if layer_index is not None:
-                layer_index = int(layer_index)
+                layer_index = self._index(layer_index, "layer_index")
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, old_name, layer_index)
             prev_name = layer.get_name()
@@ -3968,7 +3989,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _set_layer_properties(self, params):
         """Set layer opacity, blend mode, and/or visibility."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             layer_index = params.get("layer_index", None)
             opacity     = params.get("opacity", None)
@@ -3976,7 +3997,7 @@ class MCPPlugin(Gimp.PlugIn):
             visible     = params.get("visible", None)
             mode = self._blend_mode_from_string(blend_mode) if blend_mode not in (None, "") else None
             if layer_index is not None:
-                layer_index = int(layer_index)
+                layer_index = self._index(layer_index, "layer_index")
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
             if opacity is None and mode is None and visible is None:
@@ -4003,12 +4024,12 @@ class MCPPlugin(Gimp.PlugIn):
     def _reorder_layer(self, params):
         """Move a layer to a new stack position."""
         try:
-            image_index  = int(params.get("image_index", 0))
+            image_index  = self._index(params.get("image_index", 0), "image_index")
             layer_name   = params.get("layer_name", None)
             layer_index  = params.get("layer_index", None)
             new_position = int(params.get("new_position", 0))
             if layer_index is not None:
-                layer_index = int(layer_index)
+                layer_index = self._index(layer_index, "layer_index")
             image = self._get_image(image_index)
             layer = self._resolve_layer(image, layer_name, layer_index)
             # One call, so one undo step without an undo group; an empty group
@@ -4022,7 +4043,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _flatten_image(self, params):
         """Flatten all layers."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             image.undo_group_start()
             try:
                 self._check_item(image.flatten(), "Flattening the image")
@@ -4036,7 +4057,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _merge_visible_layers(self, params):
         """Merge visible layers."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             image.undo_group_start()
             try:
                 merged = self._check_item(image.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE),
@@ -4051,7 +4072,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _list_layers(self, params):
         """List all layers with properties."""
         try:
-            image  = self._get_image(int(params.get("image_index", 0)))
+            image  = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             layers = image.get_layers()
             layer_list = []
             for i, layer in enumerate(layers):
@@ -4081,7 +4102,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_layer(self, params):
         """Fill entire layer with color."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
@@ -4117,7 +4138,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_selection(self, params):
         """Fill current selection with color or transparency."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             fill_type   = (params.get("fill_type") or "foreground").lower()
             if fill_type not in ("foreground", "background", "pattern", "transparent"):
@@ -4198,7 +4219,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_line(self, params):
         """Draw a straight line."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x1 = float(params.get("x1", 0))
             y1 = float(params.get("y1", 0))
@@ -4239,7 +4260,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_rectangle(self, params):
         """Draw a rectangle outline."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x          = int(params.get("x", 0))
             y          = int(params.get("y", 0))
@@ -4283,7 +4304,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_ellipse(self, params):
         """Draw an ellipse outline."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x          = int(params.get("x", 0))
             y          = int(params.get("y", 0))
@@ -4327,7 +4348,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_rectangle(self, params):
         """Fill a rectangular region with color."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x       = int(params.get("x", 0))
             y       = int(params.get("y", 0))
@@ -4360,7 +4381,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_ellipse(self, params):
         """Fill an elliptical region with color."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x       = int(params.get("x", 0))
             y       = int(params.get("y", 0))
@@ -4399,7 +4420,7 @@ class MCPPlugin(Gimp.PlugIn):
         produced visible output.
         """
         try:
-            image_index   = int(params.get("image_index", 0))
+            image_index   = self._index(params.get("image_index", 0), "image_index")
             layer_name    = params.get("layer_name", None)
             color1        = params.get("color1", "black")
             color2        = params.get("color2", "white")
@@ -4581,7 +4602,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _add_text(self, params):
         """Add a text layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             text_str    = params.get("text", "")
             x           = int(params.get("x", 0))
             y           = int(params.get("y", 0))
@@ -4644,7 +4665,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _edit_text(self, params):
         """Edit an existing text layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", "")
             new_text    = params.get("text", None)
             new_font    = params.get("font", None)
@@ -4742,7 +4763,7 @@ class MCPPlugin(Gimp.PlugIn):
         """
         try:
             from gi.repository import Gegl
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             vectors     = params.get("vectors", None)
             image    = self._get_image(image_index)
@@ -4896,7 +4917,7 @@ class MCPPlugin(Gimp.PlugIn):
           4. Gaussian-blur (plug-in-gauss, GEGL gaussian-blur fallback)
         """
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             offset_x    = int(params.get("offset_x", 5))
             offset_y    = int(params.get("offset_y", 5))
@@ -5024,7 +5045,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _apply_gaussian_blur(self, params):
         """Apply Gaussian blur."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             radius      = float(params.get("radius", 5.0))
             image    = self._get_image(image_index)
@@ -5045,7 +5066,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _apply_pixelate(self, params):
         """Apply pixelate effect."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             block_size  = int(params.get("block_size", 10))
             image    = self._get_image(image_index)
@@ -5066,7 +5087,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _apply_emboss(self, params):
         """Apply emboss effect."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             azimuth     = float(params.get("azimuth", 315))
             elevation   = float(params.get("elevation", 45))
@@ -5091,7 +5112,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _apply_vignette(self, params):
         """Apply vignette effect."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             softness    = float(params.get("softness", 0.8))
             shape       = str(params.get("shape", "circle")).lower()
@@ -5116,7 +5137,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _apply_noise(self, params):
         """Add noise to a layer."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             amount      = float(params.get("amount", 0.2))
             image    = self._get_image(image_index)
@@ -5145,7 +5166,7 @@ class MCPPlugin(Gimp.PlugIn):
             output_dir   = params.get("output_dir", "")
             platform_str = self._option("platform", params.get("platform", "android"),
                                         {"android": "android", "ios": "ios"})
-            src_index    = int(params.get("source_image_index", 0))
+            src_index    = self._index(params.get("source_image_index", 0), "source_image_index")
             fmt          = params.get("format", "png")
             self._check_export_args(fmt, 95)
 
@@ -5205,7 +5226,7 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             output_dir    = params.get("output_dir", "")
             jpeg_quality  = int(params.get("jpeg_quality", 85))
-            image_index   = int(params.get("image_index", 0))
+            image_index   = self._index(params.get("image_index", 0), "image_index")
             max_width     = params.get("max_width", None)
             max_height    = params.get("max_height", None)
             self._check_export_args("jpeg", jpeg_quality)
@@ -5429,7 +5450,7 @@ class MCPPlugin(Gimp.PlugIn):
             padding     = int(params.get("padding", 0))
             source      = self._option("source", params.get("source", "layers"),
                                        {"layers": "layers", "images": "images"})
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             import math
 
             if source == "images":
@@ -5508,7 +5529,7 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             output_dir  = params.get("output_dir", "")
             platforms   = params.get("platforms", None)
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
 
             PLATFORM_SIZES = {
                 "instagram_square":   (1080, 1080),
@@ -5593,7 +5614,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _set_active_image(self, params):
         """Raise a specific image to the front."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             image = self._get_image(image_index)
             image_id = image.get_id()
             # GIMP 3.2 has no Gimp.get_displays(), so only a window the plugin
@@ -5638,7 +5659,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _convert_color_mode(self, params):
         """Convert image color mode."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             mode = self._option("mode", params.get("mode", "RGB"),
                                 {m: m for m in ("RGB", "RGBA", "GRAY", "GRAYA", "INDEXED")})
             num_colors  = int(params.get("num_colors", 256))
@@ -5702,7 +5723,7 @@ class MCPPlugin(Gimp.PlugIn):
         """Close an image, optionally saving first."""
         try:
             from gi.repository import Gio
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             save_first  = bool(params.get("save_first", False))
             image = self._get_image(image_index)
             if save_first:
@@ -5746,7 +5767,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _get_selection_bounds(self, params):
         """Get selection bounding rectangle."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            image = self._get_image(self._index(params.get("image_index", 0), "image_index"))
             _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
             return {
                 "status": "success",
@@ -5764,7 +5785,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _get_pixel_color(self, params):
         """Get color of a single pixel."""
         try:
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
             x           = int(params.get("x", 0))
             y           = int(params.get("y", 0))
@@ -5803,7 +5824,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "blue":  Gimp.HistogramChannel.BLUE,
                 "alpha": Gimp.HistogramChannel.ALPHA,
             }
-            image_index = int(params.get("image_index", 0))
+            image_index = self._index(params.get("image_index", 0), "image_index")
             channel_str = params.get("channel", "value")
             image    = self._get_image(image_index)
             drawable = (image.get_selected_layers() or image.get_layers() or [None])[0]

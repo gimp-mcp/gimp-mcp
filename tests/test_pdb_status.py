@@ -784,7 +784,7 @@ def main():
             ({"image_index": -1}, "image_index must be a non-negative integer"),
             ({"image_index": 0.5}, "image_index must be a non-negative integer"),
             ({"image_index": True}, "image_index must be a non-negative integer"),
-            ({"image_index": "0"}, "image_index must be a non-negative integer"),
+            ({"image_index": "-1"}, "image_index must be a non-negative integer"),
             ({"image_index": 3}, "out of range"),
             ({"max_width": 0, "max_height": 10}, "'max_width' must be at least 1"),
             ({"max_width": 10, "max_height": -1}, "'max_height' must be at least 1"),
@@ -858,7 +858,8 @@ def main():
     get_images = mod.Gimp.get_images
     mod.Gimp.get_images = staticmethod(lambda: [OPEN_IMAGE, second])
     try:
-        for params in ({"image_index": 1},
+        # A whole-number float or a digit string works, as for every other tool.
+        for params in ({"image_index": 1}, {"image_index": 1.0}, {"image_index": "1"},
                        {"image_index": 1, "region": {"origin_x": 0, "origin_y": 0,
                                                      "width": 10, "height": 10}}):
             scenario(png_export)

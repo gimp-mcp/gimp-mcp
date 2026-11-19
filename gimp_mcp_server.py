@@ -1855,7 +1855,8 @@ def delete_layer(
 
     Parameters:
     - layer_name: Name of the layer to delete
-    - layer_index: Position index of the layer (alternative to layer_name)
+    - layer_index: Position of the layer among the image's top-level layers, 0 = top
+      (alternative to layer_name)
     - image_index: Target image index (default 0)
 
     Provide either layer_name or layer_index. If neither is given, defaults to the
@@ -1891,7 +1892,8 @@ def rename_layer(
     Parameters:
     - new_name: New name for the layer
     - old_name: Current name of the layer to rename
-    - layer_index: Position index alternative to old_name
+    - layer_index: Position of the layer among the image's top-level layers, 0 = top
+      (alternative to old_name)
     - image_index: Target image index (default 0)
 
     Returns: {old_name, new_name}
@@ -1925,7 +1927,8 @@ def set_layer_properties(
     """Set properties on an existing layer.
 
     Parameters:
-    - layer_name / layer_index: Identify the layer (defaults to the selected layer, else the top layer)
+    - layer_name / layer_index: Identify the layer; layer_index is its position among the
+      image's top-level layers, 0 = top (defaults to the selected layer, else the top layer)
     - opacity: New opacity 0-100 (omit to leave unchanged)
     - blend_mode: NORMAL, MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE, BURN,
       HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY, or
