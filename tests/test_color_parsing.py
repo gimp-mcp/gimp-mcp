@@ -42,7 +42,7 @@ def check(name, condition, detail=""):
 
 def main():
     img = FakeImage3()
-    state = {"bounds": (True, False, 0, 0, 0, 0), "calls": []}
+    state = {"bounds": (True, False, 0, 0, 0, 0), "calls": [], "ops": []}
     install_gi_stub([img], state)
     plugin = load_plugin()
     to_hex = plugin.color_to_hex

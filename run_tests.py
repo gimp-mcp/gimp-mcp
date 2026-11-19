@@ -121,11 +121,25 @@ print()
 print("=== Cat 4: Selections ===")
 t('select_rect',    cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
 t('select_ellipse', cmd('select_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
+# Confirm the setup selection is actually active: the
+# fill_layer_clears_selection check below would pass even if there was no
+# selection before the fill.
+_sel = cmd('get_selection_bounds', {'image_index': 0})
+chk('selection_active_before_fill_layer',
+    _sel.get('results', {}).get('has_selection') is True, _sel.get('results'))
 # Regression #23: select_by_color must actually create a selection, not
 # silently no-op while reporting success. Fill a known color and clear any
 # prior selection first, so a leftover selection can't mask a no-op.
 # Assert the setup itself succeeds so a broken fill can't skew the real check.
 t('select_setup_fill', cmd('fill_layer',  {'image_index': 0, 'color': '#ffffff'}))
+# fill_layer documents that it clears any active selection (select-all, fill,
+# select-none). A save/restore of the selection was tried instead, but on
+# GIMP 3.2 it corrupts the selection state when run from a worker thread:
+# the select_item + remove_channel pair leaves the PDB seeing no selection,
+# and every subsequent stroke fails with "no selection to stroke".
+_sel = cmd('get_selection_bounds', {'image_index': 0})
+chk('fill_layer_clears_selection', _sel.get('results', {}).get('has_selection') is False,
+    _sel.get('results'))
 t('select_setup_none', cmd('select_none', {'image_index': 0}))
 t('select_color',   cmd('select_by_color',  {'image_index': 0, 'color': '#ffffff'}))
 _sel = cmd('get_selection_bounds', {'image_index': 0})
@@ -322,23 +336,58 @@ print("=== Cat 10: Fill safety ===")
 # With no selection, GIMP applies Edit > Clear / Fill to the ENTIRE layer.
 # fill_selection used to report success while destroying the image; it must
 # now refuse, leaving the layer untouched.
-cmd('new_canvas', {'width': 64, 'height': 64, 'fill': '#ff0000'})
-cmd('select_none', {'image_index': 0})
-_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
-chk('fill_selection_refuses_no_selection', _r.get('status') == 'error', _r.get('error'))
-_r = cmd('fill_selection', {'image_index': 0, 'color': '#00ff00'})
-chk('fill_selection_refuses_no_selection_color', _r.get('status') == 'error', _r.get('error'))
-_p = cmd('get_pixel_color', {'image_index': 0, 'x': 32, 'y': 32}).get('results', {})
-chk('fill_selection_no_selection_layer_intact',
-    _p.get('color_rgb') == [255, 0, 0] and _p.get('alpha') == 255, _p)
-# The guard must not block a real selection.
-cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 10, 'height': 10})
-_r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
-chk('fill_selection_with_selection_succeeds', _r.get('status') == 'success', _r.get('error'))
-cmd('select_none', {'image_index': 0})
+_canvas = cmd('new_canvas', {'width': 64, 'height': 64, 'fill': '#ff0000'})
+chk('new_canvas_succeeds', _canvas.get('status') == 'success', _canvas.get('error'))
+
+# The Cat 10 canvas was opened by the plugin (new_canvas), so its display
+# window is tracked and set_active_image can raise it. If canvas creation
+# failed, index 0 could refer to an older image, so skip everything that
+# follows: the test must not fill or close an image it did not create
+# (new_canvas_succeeds already records the failure).
+if _canvas.get('status') != 'success':
+    print("  SKIP Cat 10 fill-safety and Cat 11 window-management checks: canvas creation failed")
+else:
+    cmd('select_none', {'image_index': 0})
+    _r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+    chk('fill_selection_refuses_no_selection', _r.get('status') == 'error', _r.get('error'))
+    _r = cmd('fill_selection', {'image_index': 0, 'color': '#00ff00'})
+    chk('fill_selection_refuses_no_selection_color', _r.get('status') == 'error', _r.get('error'))
+    _p = cmd('get_pixel_color', {'image_index': 0, 'x': 32, 'y': 32}).get('results', {})
+    chk('fill_selection_no_selection_layer_intact',
+        _p.get('color_rgb') == [255, 0, 0] and _p.get('alpha') == 255, _p)
+    # The guard must not block a real selection.
+    cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 10, 'height': 10})
+    _r = cmd('fill_selection', {'image_index': 0, 'fill_type': 'transparent'})
+    chk('fill_selection_with_selection_succeeds', _r.get('status') == 'success', _r.get('error'))
+    cmd('select_none', {'image_index': 0})
+
+    print()
+    print("=== Cat 11: GIMP 3 window management and undo ===")
+    # undo/redo are not exposed by GIMP 3's Python API: they must fail with the
+    # clear "not supported" error, not an AttributeError traceback.
+    _r = cmd('undo', {'image_index': 0, 'steps': 1})
+    chk('undo_gimp3_clear_error', _r.get('status') == 'error'
+        and 'scriptable undo' in _r.get('error', ''), _r.get('error'))
+    _r = cmd('redo', {'image_index': 0, 'steps': 1})
+    chk('redo_gimp3_clear_error', _r.get('status') == 'error'
+        and 'scriptable undo' in _r.get('error', ''), _r.get('error'))
+
+    _r = cmd('set_active_image', {'image_index': 0})
+    chk('set_active_image_tracked_window', _r.get('status') == 'success', _r.get('error'))
+
+    # close_image deletes the tracked window; GIMP then deletes the image
+    # itself (last window closed). Guard the baseline: if that list_images
+    # failed, the arithmetic below would TypeError instead of failing cleanly.
+    _before = cmd('list_images', {}).get('results', {}).get('count')
+    chk('list_images_before_close', isinstance(_before, int) and _before >= 1, _before)
+    t('close_image', cmd('close_image', {'image_index': 0, 'save_first': False}))
+    _after = cmd('list_images', {}).get('results', {}).get('count')
+    chk('close_image_removed_image',
+        isinstance(_after, int) and _after == _before - 1,
+        {'before': _before, 'after': _after})
 
 print()
-print("=== Cat 11: Blur, sharpen and drop shadow change pixels ===")
+print("=== Cat 12: Blur, sharpen and drop shadow change pixels ===")
 # Based on the pixel checks in #62 by gr8monk3ys.
 
 
@@ -472,7 +521,7 @@ for _bad in ({'blur_radius': 'inf'}, {'blur_radius': 'nan'}, {'blur_radius': -1}
         {'status': _r.get('status'), 'layer_ids': _ids, 'error': _r.get('error')})
 
 print()
-print("=== Cat 12: export_web_optimized file names ===")
+print("=== Cat 13: export_web_optimized file names ===")
 # Based on #62 by gr8monk3ys. The files used to be named after the export
 # copy, which has no file, so every export went to image.jpg / image.png.
 # The snap GIMP has a private /tmp, so use a folder under the home directory.
