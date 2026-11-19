@@ -387,7 +387,7 @@ else:
         {'before': _before, 'after': _after})
 
 print()
-print("=== Cat 11: Blur, sharpen and drop shadow change pixels ===")
+print("=== Cat 12: Blur, sharpen and drop shadow change pixels ===")
 # Based on the pixel checks in #62 by gr8monk3ys.
 
 
@@ -521,7 +521,7 @@ for _bad in ({'blur_radius': 'inf'}, {'blur_radius': 'nan'}, {'blur_radius': -1}
         {'status': _r.get('status'), 'layer_ids': _ids, 'error': _r.get('error')})
 
 print()
-print("=== Cat 12: export_web_optimized file names ===")
+print("=== Cat 13: export_web_optimized file names ===")
 # Based on #62 by gr8monk3ys. The files used to be named after the export
 # copy, which has no file, so every export went to image.jpg / image.png.
 # The snap GIMP has a private /tmp, so use a folder under the home directory.
