@@ -137,6 +137,13 @@ right command when the versions differ.
   writing to the socket themselves can send one: the MCP server sends only types the
   plug-in knows. Based on
   #63 by @yonggandewo12.
+- The tool docs say which layer a tool uses when no layer is given: the selected one,
+  else the top one. They said "the active layer", which GIMP 3 doesn't have. `new_canvas`
+  says `name` names the background layer, not the image. The README's GIMP 3.2
+  compatibility table no longer recommends a procedure 3.2 doesn't have
+  (`gimp-text-fontname`) or GEGL operations that can't be applied to a layer
+  (`gegl:linear-gradient`), and the protocol docs no longer recommend
+  `image.get_active_layer()`, which doesn't exist. Based on #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

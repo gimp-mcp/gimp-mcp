@@ -138,9 +138,11 @@ All tools return MCP-compliant data that AI assistants can process directly.
   layers = image.get_layers()  # Returns list of Layer objects
   ```
 
-- **`image.get_active_layer()`**: Gets the active layer from an image
+- **`image.get_selected_layers()`**: Gets the selected layers of an image (GIMP 3 has
+  no `get_active_layer()`)
   ```python
-  active_layer = image.get_active_layer()  # Returns Layer object
+  selected = image.get_selected_layers()  # Returns a list of Layer objects
+  layer = (selected or image.get_layers())[0]  # what the tools use by default
   ```
 
 - **Get foreground color** 
@@ -220,7 +222,7 @@ Gimp.displays_flush()
 ### Non-Working Methods (GIMP 3.0 Changes)
 - **`Gimp.get_active_image()`**: ❌ Does not exist
 - **`Gimp.list_images()`**: ❌ Does not exist  
-- **`Gimp.get_active_layer()`**: ❌ Does not exist (use `image.get_active_layer()` instead)
+- **`Gimp.get_active_layer()`**: ❌ Does not exist, nor does `image.get_active_layer()` (use `image.get_selected_layers()` or `image.get_layers()` instead)
 - **`from gimpfu import *`**: ❌ gimpfu module not available in GIMP 3.0
 - **`Gimp.file_new_for_path()`**: ❌ Use `Gio.File.new_for_path()` instead
 
