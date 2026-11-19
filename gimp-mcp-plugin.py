@@ -25,6 +25,7 @@ import tempfile
 import os
 import math
 import platform
+import selectors
 import signal
 
 # Constants for configuration and thresholds
@@ -148,14 +149,148 @@ def probe_listener(host, port, timeout=2.0):
     return "other"
 
 
+class _NullOut:
+    """A stream that discards what is written to it."""
+
+    def write(self, s):
+        return len(s)
+
+    def writelines(self, lines):
+        for _line in lines:
+            pass
+
+    def flush(self):
+        pass
+
+
+class _ThreadStdout:
+    """sys.stdout that sends a capturing thread's output to its own buffer.
+
+    exec_and_get_results() returns what a command prints. Swapping sys.stdout
+    for a StringIO captured every thread's prints, so log lines from other
+    connections ("Connected to client: ...") ended up in a command's results.
+    Other threads write to the real stdout.
+    """
+
+    def __init__(self, default):
+        # Under pythonw (GIMP on Windows) sys.stdout is None and print() does
+        # nothing; writing to None would raise in every thread.
+        self.default = default if default is not None else _NullOut()
+        self._buffers = {}
+
+    def _target(self):
+        return self._buffers.get(threading.get_ident(), self.default)
+
+    def capture(self, buffer):
+        self._buffers[threading.get_ident()] = buffer
+
+    def release(self):
+        self._buffers.pop(threading.get_ident(), None)
+
+    def write(self, s):
+        return self._target().write(s)
+
+    def writelines(self, lines):
+        return self._target().writelines(lines)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self.default, name)
+
+
 def exec_and_get_results(command, context):
+    """Run command in context and return what it printed."""
+    if not isinstance(sys.stdout, _ThreadStdout):
+        sys.stdout = _ThreadStdout(sys.stdout)
+    router = sys.stdout
     buffer = io.StringIO()
-    original_stdout = sys.stdout
-    sys.stdout = buffer
-    exec(command, context)
-    sys.stdout = original_stdout
-    output = buffer.getvalue()
-    return output
+    router.capture(buffer)
+    try:
+        exec(command, context)
+    finally:
+        # Even when the command raises: before, an exception left sys.stdout
+        # pointing at the StringIO, and every later log line was lost.
+        router.release()
+    return buffer.getvalue()
+
+
+# A client that connects and sends nothing, or stops halfway through a
+# request, must not hold its handler thread forever.
+CLIENT_IDLE_TIMEOUT = 300      # seconds with no request started
+CLIENT_PARTIAL_TIMEOUT = 30    # seconds to finish a request once it has started
+CLIENT_REPLY_TIMEOUT = 300     # seconds to send a reply (the client must read it)
+KEEP_ALIVE_REQUEST = "disable_auto_disconnect"
+_KEEP_ALIVE_BYTES = KEEP_ALIVE_REQUEST.encode()
+_JSON_SPACE = b" \t\r\n"
+
+
+def _malformed(reason):
+    return {"status": "error",
+            "error": f"Malformed request: {reason}. Send one JSON object per request, "
+                     f"e.g. {{\"type\": \"get_gimp_info\", \"params\": {{}}}}, ending "
+                     f"with a newline."}
+
+
+def next_request(buf, eof=False):
+    """Split the first request off the bytes a client has sent.
+
+    Returns (request, error, rest): request is the text of one complete JSON
+    document or the keep-alive request; error is a reply for bytes that can't
+    become a request; both are None when buf holds only part of a request
+    (or nothing). rest is what follows. With eof (the client has finished
+    sending), a partial request is an error too.
+
+    A request may end with a newline but doesn't have to (older clients
+    send bare JSON). Something that isn't JSON is told apart from a request
+    still arriving by a newline after the point where parsing failed.
+    """
+    buf = buf.lstrip(_JSON_SPACE)
+    if not buf:
+        return None, None, b""
+    sentinel = _KEEP_ALIVE_BYTES
+    if buf.startswith(sentinel) and (len(buf) == len(sentinel)
+                                     or buf[len(sentinel):len(sentinel) + 1] in
+                                     (b" ", b"\t", b"\r", b"\n")):
+        return KEEP_ALIVE_REQUEST, None, buf[len(sentinel):]
+
+    def skip_line(at):
+        """The bytes after the line holding byte offset at (nothing if no newline)."""
+        nl = buf.find(b"\n", at)
+        return buf[nl + 1:] if nl >= 0 else b""
+
+    bad_bytes = None
+    try:
+        text = buf.decode("utf-8")
+    except UnicodeDecodeError as e:
+        # Parse what comes before the error: a character cut by the read is
+        # completed by the next one; other bad bytes are an error, but only
+        # once the requests before them are served.
+        text = buf[:e.start].decode("utf-8")
+        if e.reason != "unexpected end of data" or eof:
+            bad_bytes = e
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text)
+    except RecursionError:
+        return None, _malformed("nested too deeply"), b""
+    except json.JSONDecodeError as e:
+        if bad_bytes is not None:
+            return None, _malformed(f"not UTF-8 ({bad_bytes.reason} at byte "
+                                    f"{bad_bytes.start})"), skip_line(bad_bytes.start)
+        if eof or "\n" in text[e.pos:]:
+            return None, _malformed(f"not JSON ({e.msg} at character {e.pos})"), \
+                skip_line(len(text[:e.pos].encode("utf-8")))
+        return None, None, buf
+    rest = buf[len(text[:end].encode("utf-8")):]
+    if not isinstance(obj, dict):
+        return None, _malformed(f"a JSON {type(obj).__name__}, not an object"), rest
+    # raw_decode stops after the object; anything else on its line makes the
+    # line malformed, and the object must not run.
+    if rest.split(b"\n", 1)[0].strip(_JSON_SPACE):
+        return None, _malformed("unexpected text after the JSON object on its line"), \
+            skip_line(len(buf) - len(rest))
+    return text[:end], None, rest
 
 
 # CSS Color Module Level 4 color names (all 148), from Pillow's
@@ -373,7 +508,6 @@ class MCPPlugin(Gimp.PlugIn):
         self.server_thread = None
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
-        self.auto_disconnect_client = True
         # One client thread per connection; a retry after a client-side timeout
         # would otherwise drive the libgimp wire protocol concurrently and crash
         self.command_lock = threading.Lock()
@@ -753,77 +887,154 @@ class MCPPlugin(Gimp.PlugIn):
         return isinstance(j, dict) and j.get("type") == "check_server"
 
     def _handle_client(self, client):
-        """Handle connected client"""
-        # print("Client handler started")
-        buffer = b''
+        """Serve the requests a client sends on one connection.
 
-        # Receive data in chunks to handle larger payloads
-        while True:
-            data = client.recv(4096)
-            # print(f"Received data: {data}")
-            if not data:
-                break
-            buffer += data
-            
-            # Check if we have a complete message
-            # For simplicity, assume messages end with newline or are complete JSON
-            try:
-                if isinstance(buffer, (bytes, bytearray)):
-                    request = buffer.decode('utf-8')
+        After replying, the connection is closed (auto-disconnect) once the
+        requests that have already arrived are answered, so several requests
+        that arrive together each get a reply. One that arrives after the close
+        is lost, so a client sending several should disable auto-disconnect
+        first. A client that sends
+        "disable_auto_disconnect" keeps its connection open until it closes
+        it or stays idle for CLIENT_IDLE_TIMEOUT seconds. Each reply is one
+        JSON object followed by a newline. Something that isn't a request gets
+        an error reply and closes the connection, so nothing after it runs.
+        """
+        # A bytearray: adding a read to bytes would copy the whole buffer.
+        buf = bytearray()
+        eof = False
+        keep_alive = False
+        served = False
+        deadline = None  # when the request that has started arriving must be complete
+        parse = True     # whether buf may now hold a whole request or a bad line
+        close_after_error = False
+        try:
+            while True:
+                if parse:
+                    request, error, rest = next_request(buf, eof)
+                    buf = bytearray(rest)
                 else:
-                    request = str(buffer)
-                
-                # Try to parse as JSON to see if complete
-                if request.strip():
-                    json.loads(request)  # This will raise if incomplete
+                    request = error = None
+                if request is None and error is None:
+                    # Without keep-alive, close once nothing more has arrived;
+                    # a request that has started arriving is still read.
+                    if eof or (served and not keep_alive and not buf
+                               and not self._readable(client)):
+                        break
+                    if buf:
+                        # One deadline per request: a client sending a byte
+                        # now and then must not keep it open for good.
+                        if deadline is None:
+                            deadline = time.monotonic() + CLIENT_PARTIAL_TIMEOUT
+                        timeout = deadline - time.monotonic()
+                    else:
+                        deadline, timeout = None, CLIENT_IDLE_TIMEOUT
+                    try:
+                        if timeout <= 0:
+                            raise socket.timeout()
+                        client.settimeout(timeout)
+                        data = client.recv(65536)
+                    except socket.timeout:
+                        if buf:
+                            self._reply(client, _malformed(
+                                f"the request was not complete after "
+                                f"{CLIENT_PARTIAL_TIMEOUT} s"))
+                            close_after_error = True
+                        break
+                    if data:
+                        buf += data
+                        # Parsing the whole buffer after every read is
+                        # quadratic for a large request. A request ends with
+                        # "}" (or a newline after it), a bad line with a
+                        # newline, and the keep-alive request with its name,
+                        # so only those can complete something.
+                        end = len(buf) - (len(data) - len(data.rstrip(_JSON_SPACE)))
+                        parse = (b"\n" in data or data.rstrip(_JSON_SPACE).endswith(b"}")
+                                 or buf[max(0, end - len(_KEEP_ALIVE_BYTES)):end]
+                                 == _KEEP_ALIVE_BYTES)
+                    else:
+                        eof = parse = True
+                    continue
+                served = True
+                deadline = None
+                parse = True
+                if error is not None:
+                    # Stop at the first thing that isn't a request. Reading on
+                    # would run JSON that follows other text: a web page can
+                    # POST to this port, and the body of an HTTP request, after
+                    # its header lines, would be executed.
+                    self._reply(client, error)
+                    close_after_error = True
                     break
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Continue receiving if JSON is incomplete
-                continue
-        
-        if not buffer:
-            print("Client disconnected")
-            return
+                if request == KEEP_ALIVE_REQUEST:
+                    keep_alive = True
+                    response = {"status": "success", "results": "OK"}
+                elif self._is_check_server(request):
+                    # check_server is handled only here, without the lock (it
+                    # makes no GIMP calls), so a probe from another plug-in
+                    # process gets a reply even mid-command.
+                    response = {"status": "success",
+                                "results": {"running": True, "port": self.port}}
+                else:
+                    with self.command_lock:
+                        response = self.execute_command(request)
+                self._reply(client, response)
+        except OSError as e:
+            print(f"[MCP] Client connection error: {e}")
+        except Exception as e:
+            print(f"[MCP] Client handler error: {e}")
+            traceback.print_exc()
+        finally:
+            if close_after_error:
+                self._discard_input(client)
+            try:
+                client.close()
+            except OSError:
+                pass
 
-        if isinstance(buffer, (bytes, bytearray)):
-            request = buffer.decode('utf-8')
-        else:
-            request = str(buffer)
-        
-        # print(f"Parsed request: {request}")
-        if self._is_check_server(request):
-            # check_server is handled only here, without the lock (it makes no
-            # GIMP calls), so a probe from another plug-in process gets a reply
-            # even mid-command.
-            response = {"status": "success", "results": {"running": True, "port": self.port}}
-        else:
-            with self.command_lock:
-                response = self.execute_command(request)
-        print(f"response type: {type(response)}")
-        
-        if isinstance(response, dict):
-            response_str = json.dumps(response)
-        else:
-            response_str = str(response)
-            
-        # Send response in chunks for large data
-        response_bytes = response_str.encode('utf-8')
-        bytes_sent = 0
-        while bytes_sent < len(response_bytes):
-            chunk = response_bytes[bytes_sent:bytes_sent + 8192]
-            client.sendall(chunk)
-            bytes_sent += len(chunk)
-            
-        if self.auto_disconnect_client:
-            client.close()
-        return
+    @staticmethod
+    def _discard_input(client, seconds=2.0):
+        """Read and drop what the client is still sending, for a little while.
+
+        Closing a socket with unread input makes the system reset the
+        connection, and the client may then lose the error reply it was sent.
+        """
+        try:
+            client.shutdown(socket.SHUT_WR)
+            end = time.monotonic() + seconds
+            while (left := end - time.monotonic()) > 0:
+                client.settimeout(left)
+                if not client.recv(65536):
+                    break
+        except OSError:
+            pass
+
+    @staticmethod
+    def _readable(client):
+        """True if more bytes (or the client's end of stream) are already waiting."""
+        try:
+            with selectors.DefaultSelector() as sel:
+                sel.register(client, selectors.EVENT_READ)
+                return bool(sel.select(0))
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _reply(client, response):
+        """Send one reply, followed by a newline."""
+        try:
+            text = json.dumps(response) if isinstance(response, dict) else str(response)
+        except (TypeError, ValueError) as e:
+            # A value json can't encode must not leave the client waiting for
+            # a reply that never comes.
+            text = json.dumps({"status": "error",
+                               "error": f"The reply could not be encoded as JSON: {e}"})
+        # Not whatever was left of the request's read deadline.
+        client.settimeout(CLIENT_REPLY_TIMEOUT)
+        client.sendall(text.encode("utf-8") + b"\n")
 
     def execute_command(self, request):
         """Run one command. Called from client threads; command_lock keeps commands from overlapping."""
         try:
-            if request == "disable_auto_disconnect":
-                self.auto_disconnect_client = False
-                return {"status": "success", "results": "OK"}
             j = json.loads(request)
             if "type" in j and j["type"] == "get_image_bitmap":
                 params = j.get("params", {})
@@ -1946,7 +2157,9 @@ class MCPPlugin(Gimp.PlugIn):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.settimeout(1.0)
             sock.bind((self.host, self.port))
-            sock.listen(1)
+            # Room for several clients connecting at once (the MCP server opens
+            # a connection per call); with 1, extra connects wait for a retry.
+            sock.listen(16)
         except OSError:
             sock.close()
             raise

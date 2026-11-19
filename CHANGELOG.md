@@ -104,6 +104,20 @@ right command when the versions differ.
   @yonggandewo12.
 - `scale_image` and `scale_to_fit` use their `interpolation`. They used to ignore it and
   scale with GIMP's current setting.
+- The plug-in's socket server no longer hangs on a bad request. A request that isn't JSON
+  or UTF-8 gets an error reply and ends the connection; it used to get no reply, and its
+  connection held a thread for good. Two requests that arrive together each get a reply
+  (neither used to); to send several on one connection reliably, send
+  `disable_auto_disconnect` first. A client that sends nothing, or half a request, is
+  disconnected after a timeout (300 s idle, 30 s to finish a request). A reply that can't
+  be encoded as JSON comes back as an error instead of no reply. Replies end with a
+  newline. `disable_auto_disconnect` keeps only its own connection open, and the
+  connection now serves further requests; before, it served one request whatever the
+  setting. Based on #63 by @yonggandewo12.
+- `call_api` output contains only what the command printed. Log lines from other
+  connections running at the same time ("Connected to client: ...") used to appear in it,
+  and after a command that raised, the plug-in's own log output was lost until the
+  plug-in restarted. Based on #63 by @yonggandewo12.
 - `adjust_curves` checks custom `points` before changing anything: 2-1024 `[input, output]`
   pairs (or a flat list of them), each value 0-255, no two points with the same input.
   A `NaN` value used to crash GIMP. Values outside 0-255 were clipped, so a curve could

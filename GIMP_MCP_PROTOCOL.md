@@ -455,13 +455,31 @@ gimp_info = get_gimp_info()
 - **Host**: localhost (default)
 - **Port**: 9877 (default)
 - **Transport**: TCP socket
-- **Format**: JSON messages
-- **Auto-disconnect**: Configurable (default: true)
+- **Requests**: one JSON object each, ending with a newline (a request without the
+  newline is accepted too)
+- **Replies**: one JSON object per request, in order, each followed by a newline
+- **Auto-disconnect**: after replying, the plug-in closes the connection once every request
+  that has already arrived is answered. Requests sent in one write usually arrive
+  together, but TCP doesn't promise it, and one that arrives after the close is lost. It
+  can also cost the reply before it: closing a connection with unread input makes the
+  system reset it, and the client may lose a reply it hasn't read yet. To
+  send several requests on one connection reliably, send `disable_auto_disconnect` (a bare
+  line, not JSON) first. The connection then stays open until the client closes it or
+  sends nothing for 300 s.
+  This applies only to that connection.
+- **Errors**: a line that isn't JSON or UTF-8, a JSON value that isn't an object, other
+  text after the object on its line (if it arrives together with the object; a complete
+  object is run as soon as it has arrived), or a request left unfinished for 30 s or by
+  the client closing its end, gets a
+  `{"status": "error", "error": "Malformed request: ..."}` reply, and the connection is
+  closed: nothing sent after it runs (so the JSON body of an HTTP request, which a web
+  page can send to this port, never runs). A connection with no request for 300 s is
+  closed.
 
 ### Command Types
 1. **`"get_image_bitmap"`**: Direct bitmap export
-2. **`"disable_auto_disconnect"`**: Keep connection alive
-3. **JSON with `"cmds"`**: Execute command array  
+2. **`"disable_auto_disconnect"`**: Keep this connection open for more requests
+3. **JSON with `"cmds"`**: Execute command array
 4. **JSON with `"params"`**: Structured API calls
 
 ### Error Handling
