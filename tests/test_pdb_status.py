@@ -131,6 +131,13 @@ class FakeDrawable:
         CALLS.append(("curves_spline", self.curves_result))
         return self.curves_result
 
+    # An RGB layer: curves may change any of its color channels.
+    def is_gray(self):
+        return False
+
+    def is_indexed(self):
+        return False
+
 
 PRECISIONS = []  # precisions passed to Gimp.Image.new_with_precision
 TEMP_IMAGES = []  # images the plug-in creates (new or duplicate), to check cleanup

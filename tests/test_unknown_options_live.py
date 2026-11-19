@@ -154,6 +154,7 @@ def main():
         refused('adjust_color_balance', 'range', {'cyan_red': 50, 'range': bogus})
         refused('adjust_curves', 'channel', {'preset': 'lighten', 'channel': bogus})
         refused('adjust_curves', 'preset', {'preset': bogus})
+        refused('adjust_curves', 'preset', {'preset': bogus, 'points': [[0, 0], [255, 200]]})
         refused('get_histogram', 'channel', {'channel': bogus})
         refused('gradient_fill', 'gradient_type', {'gradient_type': bogus})
         refused('draw_line', 'tool', {'x1': 0, 'y1': 0, 'x2': 20, 'y2': 20, 'tool': bogus})

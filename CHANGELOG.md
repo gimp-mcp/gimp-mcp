@@ -104,6 +104,16 @@ right command when the versions differ.
   @yonggandewo12.
 - `scale_image` and `scale_to_fit` use their `interpolation`. They used to ignore it and
   scale with GIMP's current setting.
+- `adjust_curves` checks custom `points` before changing anything: 2-1024 `[input, output]`
+  pairs (or a flat list of them), each value 0-255, no two points with the same input.
+  A `NaN` value used to crash GIMP. Values outside 0-255 were clipped, so a curve could
+  silently do nothing; an odd count or a single point failed with GIMP's bare "execution
+  error" and left the image marked as changed; `[input, output, extra]` triples were read
+  as other pairs; of two points with the same input, the last one silently won. A
+  `channel` the layer doesn't have (`alpha` without an alpha channel, `red`, `green` or
+  `blue` on a grayscale layer) is an error too; it failed the same bare way. On an indexed
+  layer `adjust_curves` is an error; it reported success and changed nothing. Based on
+  #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

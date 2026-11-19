@@ -2681,6 +2681,68 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    # gimp-drawable-curves-spline takes 2-1024 points.
+    CURVE_MAX_POINTS = 1024
+
+    @classmethod
+    def _curve_points(cls, points):
+        """Check curve control points; return them flat: [in, out, in, out, ...].
+
+        points is a list of [input, output] pairs or a flat list of numbers,
+        each 0-255. GIMP clamps values outside 0-1 without a word (so 300 was
+        a no-op "success"), crashes on NaN, keeps only the last of two points
+        with the same input, and rejects an odd or too small count with a bare
+        "execution error" after the undo group has marked the image changed.
+        """
+        usage = ("points must be a list of [input, output] pairs, e.g. "
+                 "[[0, 0], [128, 180], [255, 255]], or a flat list [0, 0, 128, 180, 255, 255]")
+        if not isinstance(points, (list, tuple)):
+            raise ValueError(f"{usage}; got {points!r}")
+        if points and all(isinstance(p, (list, tuple)) for p in points):
+            bad = next((p for p in points if len(p) != 2), None)
+            if bad is not None:
+                raise ValueError(f"{usage}; {list(bad)!r} is not an [input, output] pair")
+            flat = [v for p in points for v in p]
+        elif any(isinstance(p, (list, tuple)) for p in points):
+            raise ValueError(f"{usage}, not a mix of both")
+        else:
+            flat = list(points)
+            if len(flat) % 2:
+                raise ValueError(f"{usage}; a flat list needs an even number of values, "
+                                 f"got {len(flat)}")
+        for v in flat:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f"curve point values must be numbers 0-255, got {v!r}")
+            if not 0 <= v <= 255:
+                raise ValueError(f"curve point values must be 0-255, got {v:g}")
+        pairs = len(flat) // 2
+        if not 2 <= pairs <= cls.CURVE_MAX_POINTS:
+            raise ValueError(f"a curve needs 2-{cls.CURVE_MAX_POINTS} points, got {pairs}")
+        inputs = flat[0::2]
+        dup = next((x for i, x in enumerate(inputs) if x in inputs[:i]), None)
+        if dup is not None:
+            raise ValueError(f"two points have the same input {dup:g}; "
+                             f"each input needs one output")
+        return flat
+
+    @staticmethod
+    def _check_channel(drawable, name, channel):
+        """Raise unless drawable has channel (a Gimp.HistogramChannel named name).
+
+        GIMP refuses alpha on a layer without an alpha channel, and red,
+        green, blue or luminance on a grayscale one, only once called, with
+        a bare "execution error", inside the caller's undo group, which
+        leaves the image marked as changed.
+        """
+        if channel == Gimp.HistogramChannel.ALPHA and not drawable.has_alpha():
+            raise ValueError(f"layer {drawable.get_name()!r} has no alpha channel; add one "
+                             f"first (convert_color_mode RGBA or GRAYA) or use another channel")
+        if drawable.is_gray() and channel in (
+                Gimp.HistogramChannel.RED, Gimp.HistogramChannel.GREEN,
+                Gimp.HistogramChannel.BLUE, Gimp.HistogramChannel.LUMINANCE):
+            raise ValueError(f"layer {drawable.get_name()!r} is grayscale and has no "
+                             f"{name!r} channel; use 'value'")
+
     def _adjust_curves(self, params):
         """Adjust tonal curves."""
         try:
@@ -2707,17 +2769,16 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             channel  = self._option("channel", channel_str, CHANNEL_MAP)
 
+            # Checked even when points replace it: a typo is still an error.
+            control_pts = self._option("preset", preset, PRESETS)
             if custom_pts is not None:
-                # Flatten [[in,out],...] -> [in,out,in,out,...]
-                if custom_pts and isinstance(custom_pts[0], (list, tuple)):
-                    flat = []
-                    for pt in custom_pts:
-                        flat.extend(pt)
-                    control_pts = flat
-                else:
-                    control_pts = list(custom_pts)
-            else:
-                control_pts = self._option("preset", preset, PRESETS)
+                control_pts = self._curve_points(custom_pts)
+            self._check_channel(drawable, channel_str.strip().lower(), channel)
+            if drawable.is_indexed():
+                # GIMP reports success but changes nothing.
+                raise ValueError(f"layer {drawable.get_name()!r} is indexed, which curves "
+                                 f"can't change; convert the image first "
+                                 f"(convert_color_mode RGB or GRAY)")
 
             image.undo_group_start()
             try:

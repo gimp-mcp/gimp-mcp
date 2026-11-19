@@ -997,8 +997,13 @@ def adjust_curves(
 
     Parameters:
     - preset: Built-in curve shape — "s_curve" (default), "lighten", "darken", "contrast"
-    - points: Custom control points as [[input, output], ...] override (overrides preset)
-    - channel: "value" (all), "red", "green", "blue", "alpha"
+    - points: Custom control points as [[input, output], ...] (overrides preset):
+              2-1024 points, each value 0-255, inputs in any order but no two
+              alike. A flat list [input, output, input, output, ...] works too.
+              Anything else is an error, and the layer is left as it was.
+    - channel: "value" (all), "red", "green", "blue", "alpha". "alpha" needs a layer
+               with an alpha channel; "red", "green" and "blue" need an RGB layer.
+               An indexed layer is an error: convert the image first.
     - image_index: Target image index (default 0)
     - layer_name: Layer to adjust; defaults to active layer
 
