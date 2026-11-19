@@ -2030,8 +2030,9 @@ class MCPPlugin(Gimp.PlugIn):
                 "GRAY":  Gimp.ImageType.GRAY_IMAGE,
                 "GRAYA": Gimp.ImageType.GRAYA_IMAGE,
             }
-            base_type  = mode_map.get(color_mode, Gimp.ImageBaseType.RGB)
-            layer_type = layer_type_map.get(color_mode, Gimp.ImageType.RGB_IMAGE)
+            base_type  = self._option("color_mode", params.get("color_mode", "RGB"), mode_map)
+            color_mode = color_mode.strip()
+            layer_type = layer_type_map[color_mode]
 
             image = Gimp.Image.new(width, height, base_type)
             try:
@@ -2254,22 +2255,56 @@ class MCPPlugin(Gimp.PlugIn):
             return layers[0]
         return layer
 
+    @staticmethod
+    def _option(name, value, options):
+        """Look up a named option (case-insensitive); an unknown name is an error.
+
+        options maps names, as the docs spell them, to values; value matches
+        one ignoring case and surrounding spaces. These lookups used to fall
+        back to a default, so a typo did something else than asked:
+        operation="bogus" replaced the selection, an unknown channel read the
+        value channel. Callers look options up before changing anything.
+        """
+        by_key = {k.lower(): v for k, v in options.items()}
+        key = value.strip().lower() if isinstance(value, str) else None
+        if key not in by_key:
+            raise ValueError(f"Unknown {name} {value!r}: use one of "
+                             f"{', '.join(repr(k) for k in options)}")
+        return by_key[key]
+
     def _channel_ops_from_string(self, op):
         """Map operation string to Gimp.ChannelOps enum value."""
-        return {
+        return self._option("operation", op, {
             "replace":   Gimp.ChannelOps.REPLACE,
             "add":       Gimp.ChannelOps.ADD,
             "subtract":  Gimp.ChannelOps.SUBTRACT,
             "intersect": Gimp.ChannelOps.INTERSECT,
-        }.get(op.lower(), Gimp.ChannelOps.REPLACE)
+        })
 
     def _interp_from_string(self, interp):
         """Map interpolation string to Gimp.InterpolationType."""
-        return {
+        return self._option("interpolation", interp, {
             "cubic":  Gimp.InterpolationType.CUBIC,
             "linear": Gimp.InterpolationType.LINEAR,
             "none":   Gimp.InterpolationType.NONE,
-        }.get(interp.lower(), Gimp.InterpolationType.CUBIC)
+        })
+
+    def _scale_with(self, image, width, height, interpolation):
+        """Scale the image with the given Gimp.InterpolationType.
+
+        Image.scale() uses the context's interpolation; the tools used to look
+        theirs up and drop it, so every scale used GIMP's current default.
+        """
+        Gimp.context_push()
+        try:
+            Gimp.context_set_interpolation(interpolation)
+            image.undo_group_start()
+            try:
+                self._check_ok(image.scale(width, height), "Scaling the image")
+            finally:
+                image.undo_group_end()
+        finally:
+            Gimp.context_pop()
 
     # GIMP 3 export procedures. The GIMP 2 file-*-save names don't exist in 3.x.
     EXPORT_PROCS = {
@@ -2670,7 +2705,7 @@ class MCPPlugin(Gimp.PlugIn):
 
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            channel  = CHANNEL_MAP.get(channel_str.lower(), Gimp.HistogramChannel.VALUE)
+            channel  = self._option("channel", channel_str, CHANNEL_MAP)
 
             if custom_pts is not None:
                 # Flatten [[in,out],...] -> [in,out,in,out,...]
@@ -2682,7 +2717,7 @@ class MCPPlugin(Gimp.PlugIn):
                 else:
                     control_pts = list(custom_pts)
             else:
-                control_pts = PRESETS.get(preset, PRESETS["s_curve"])
+                control_pts = self._option("preset", preset, PRESETS)
 
             image.undo_group_start()
             try:
@@ -2765,7 +2800,7 @@ class MCPPlugin(Gimp.PlugIn):
             color_range  = params.get("color_range", "all")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            hue_range = HUE_RANGE_MAP.get(color_range.lower(), Gimp.HueRange.ALL)
+            hue_range = self._option("color_range", color_range, HUE_RANGE_MAP)
             image.undo_group_start()
             try:
                 proc = self._lookup_pdb("gimp-drawable-hue-saturation")
@@ -2801,7 +2836,7 @@ class MCPPlugin(Gimp.PlugIn):
             range_str      = params.get("range", "midtones")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            color_range = RANGE_MAP.get(range_str.lower(), 1)
+            color_range = self._option("range", range_str, RANGE_MAP)
             image.undo_group_start()
             try:
                 proc = self._lookup_pdb("gimp-drawable-color-balance")
@@ -2924,7 +2959,7 @@ class MCPPlugin(Gimp.PlugIn):
             mode_str    = params.get("mode", "luminosity")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            mode = MODE_MAP.get(mode_str.lower(), Gimp.DesaturateMode.LUMINANCE)
+            mode = self._option("mode", mode_str, MODE_MAP)
             image.undo_group_start()
             try:
                 proc = self._lookup_pdb("gimp-drawable-desaturate")
@@ -2972,12 +3007,8 @@ class MCPPlugin(Gimp.PlugIn):
             height        = int(params.get("height"))
             interpolation = params.get("interpolation", "cubic")
             image  = self._get_image(image_index)
-            self._interp_from_string(interpolation)
-            image.undo_group_start()
-            try:
-                self._check_ok(image.scale(width, height), "Scaling the image")
-            finally:
-                image.undo_group_end()
+            interp = self._interp_from_string(interpolation)
+            self._scale_with(image, width, height, interp)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success", "width": width, "height": height}}
         except Exception as e:
@@ -2991,7 +3022,7 @@ class MCPPlugin(Gimp.PlugIn):
             max_height    = int(params.get("max_height"))
             interpolation = params.get("interpolation", "cubic")
             image  = self._get_image(image_index)
-            self._interp_from_string(interpolation)
+            interp = self._interp_from_string(interpolation)
             src_w  = image.get_width()
             src_h  = image.get_height()
             aspect = src_w / src_h
@@ -3002,11 +3033,7 @@ class MCPPlugin(Gimp.PlugIn):
             else:
                 new_h = max_height
                 new_w = max(1, int(max_height * aspect))
-            image.undo_group_start()
-            try:
-                self._check_ok(image.scale(new_w, new_h), "Scaling the image")
-            finally:
-                image.undo_group_end()
+            self._scale_with(image, new_w, new_h, interp)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success", "width": new_w, "height": new_h}}
         except Exception as e:
@@ -3236,9 +3263,13 @@ class MCPPlugin(Gimp.PlugIn):
         """Flip image horizontally or vertically."""
         try:
             image_index = int(params.get("image_index", 0))
-            direction   = params.get("direction", "horizontal").lower()
+            direction   = params.get("direction", "horizontal")
+            orient = self._option("direction", direction, {
+                "horizontal": Gimp.OrientationType.HORIZONTAL,
+                "vertical":   Gimp.OrientationType.VERTICAL,
+            })
+            direction = direction.strip().lower()
             image = self._get_image(image_index)
-            orient = Gimp.OrientationType.HORIZONTAL if direction == "horizontal" else Gimp.OrientationType.VERTICAL
             image.undo_group_start()
             try:
                 self._check_ok(image.flip(orient), "Flipping the image")
@@ -3255,7 +3286,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             new_w  = int(params.get("width"))
             new_h  = int(params.get("height"))
-            anchor = params.get("anchor", "center").lower()
+            anchor = params.get("anchor", "center")
             fill   = params.get("fill", "transparent")
             # Parse the fill color before changing anything, so a bad color
             # can't leave the canvas resized but unfilled.
@@ -3277,7 +3308,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "bottom":       (dx,         new_h - src_h),
                 "bottom-right": (new_w - src_w, new_h - src_h),
             }
-            off_x, off_y = anchor_offsets.get(anchor, (dx, dy))
+            off_x, off_y = self._option("anchor", anchor, anchor_offsets)
             image.undo_group_start()
             try:
                 self._check_ok(image.resize(new_w, new_h, off_x, off_y), "Resizing the canvas")
@@ -3895,7 +3926,8 @@ class MCPPlugin(Gimp.PlugIn):
             y2 = float(params.get("y2", 0))
             color_str  = params.get("color", None)
             line_width = float(params.get("width", 2.0))
-            tool       = params.get("tool", "pencil").lower()
+            tool       = self._option("tool", params.get("tool", "pencil"),
+                                      {"pencil": "pencil", "paintbrush": "paintbrush"})
             # GIMP's brush size limits; outside them the old size would be kept.
             if not 1 <= line_width <= 10000:
                 raise ValueError(f"width must be between 1 and 10000, got {line_width}")
@@ -4091,7 +4123,10 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name    = params.get("layer_name", None)
             color1        = params.get("color1", "black")
             color2        = params.get("color2", "white")
-            gradient_type = params.get("gradient_type", "linear").lower()
+            gtype = self._option("gradient_type", params.get("gradient_type", "linear"), {
+                "linear": Gimp.GradientType.LINEAR,
+                "radial": Gimp.GradientType.RADIAL,
+            })
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             w = image.get_width()
@@ -4108,9 +4143,6 @@ class MCPPlugin(Gimp.PlugIn):
             y1 = _coord("y1", "start_y", default=0)
             x2 = _coord("x2", "end_x", default=w)
             y2 = _coord("y2", "end_y", default=h)
-
-            gtype = (Gimp.GradientType.RADIAL if gradient_type == "radial"
-                     else Gimp.GradientType.LINEAR)
 
             # Parse the colors before the undo group opens: starting a group
             # clears GIMP's redo history, even if nothing is painted.
@@ -4816,7 +4848,8 @@ class MCPPlugin(Gimp.PlugIn):
         """Export icon size sets for Android or iOS."""
         try:
             output_dir   = params.get("output_dir", "")
-            platform_str = params.get("platform", "android").lower()
+            platform_str = self._option("platform", params.get("platform", "android"),
+                                        {"android": "android", "ios": "ios"})
             src_index    = int(params.get("source_image_index", 0))
             fmt          = params.get("format", "png")
             self._check_export_args(fmt, 95)
@@ -5099,7 +5132,8 @@ class MCPPlugin(Gimp.PlugIn):
             output_path = params.get("output_path", "")
             columns     = params.get("columns", None)
             padding     = int(params.get("padding", 0))
-            source      = params.get("source", "layers").lower()
+            source      = self._option("source", params.get("source", "layers"),
+                                       {"layers": "layers", "images": "images"})
             image_index = int(params.get("image_index", 0))
             import math
 
@@ -5189,7 +5223,12 @@ class MCPPlugin(Gimp.PlugIn):
                 "youtube_thumbnail":  (1280, 720),
             }
 
-            target_platforms = platforms if platforms else list(PLATFORM_SIZES.keys())
+            if platforms:
+                # Unknown names used to be skipped silently.
+                target_platforms = [self._option("platform", name, {k: k for k in PLATFORM_SIZES})
+                                    for name in platforms]
+            else:
+                target_platforms = list(PLATFORM_SIZES.keys())
             source_image = self._get_image(image_index)
             os.makedirs(output_dir, exist_ok=True)
             exported = []
@@ -5466,7 +5505,7 @@ class MCPPlugin(Gimp.PlugIn):
             channel_str = params.get("channel", "value")
             image    = self._get_image(image_index)
             drawable = (image.get_selected_layers() or image.get_layers() or [None])[0]
-            channel  = CHANNEL_MAP.get(channel_str.lower(), Gimp.HistogramChannel.VALUE)
+            channel  = self._option("channel", channel_str, CHANNEL_MAP)
             pdb = Gimp.get_pdb()
             proc = pdb.lookup_procedure("gimp-drawable-histogram")
             if proc:

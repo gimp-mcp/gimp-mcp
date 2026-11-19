@@ -101,11 +101,23 @@ right command when the versions differ.
   limit used to stop the batch halfway. An image already at its target size is left
   untouched, and each result says whether the image was `scaled`. Based on #63 by
   @yonggandewo12.
+- `scale_image` and `scale_to_fit` use their `interpolation`. They used to ignore it and
+  scale with GIMP's current setting.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
   using Normal, and accept names like `hard light` and `hard-light` (#149).
   An empty `blend_mode` leaves the mode unchanged in `set_layer_properties`.
+- An unknown option name is an error that names the valid ones, and nothing changes.
+  Tools used to replace it with a default and go on: `operation="bogus"` in
+  `select_rectangle`, `select_ellipse` and `select_by_color` replaced the selection, and
+  `interpolation`, `anchor` (`resize_canvas`), `direction` (`flip_image`), `mode`
+  (`desaturate`), `color_range`, `range` (`adjust_color_balance`), `channel` and `preset`
+  (`adjust_curves`, `get_histogram`), `gradient_type`, `color_mode` (`new_canvas`, which
+  reported the unknown mode as if it were used), `tool` (`draw_line`), `platform`
+  (`export_icon_sizes`) and `source` (`export_sprite_sheet`) fell back the same way.
+  `export_social_media_kit` skipped unknown `platforms`. Names ignore case and surrounding
+  spaces. Based on #63 by @yonggandewo12.
 - Some color strings that used to paint now return an error. Use hex or
   `rgb(r, g, b)` instead:
   - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,

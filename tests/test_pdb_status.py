@@ -315,6 +315,14 @@ def install_gi_stub():
             pass
 
         @staticmethod
+        def context_push():
+            pass
+
+        @staticmethod
+        def context_set_interpolation(interpolation):
+            pass
+
+        @staticmethod
         def context_pop():
             pass
 
