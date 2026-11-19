@@ -87,6 +87,12 @@ right command when the versions differ.
   leaves the selection as it was. It used to report success, and with `replace` the
   selection was silently gone. It now returns `has_selection` and the selection's `x`, `y`,
   `width` and `height`. Based on #63 by @yonggandewo12.
+- `warp_region` pushes pixels the way GIMP's Warp Transform tool does. It used to turn the
+  whole layer black and report success. `x`/`y` are image coordinates, also on a layer
+  with an offset, and an active selection limits the change. A vector with no push or a
+  push longer than the layer's diagonal plus the radius, an `amount` outside 0-1 (0
+  excluded), a `radius` outside 0.5-5000, a vector that doesn't reach the layer, a layer
+  group or a layer with locked pixels is an error, and nothing is warped. Based on #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of

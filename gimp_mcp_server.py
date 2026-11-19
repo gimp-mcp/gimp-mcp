@@ -2765,18 +2765,26 @@ def warp_region(
 ) -> dict:
     """Warp / liquify a region of the image by pushing pixels in a direction.
 
-    Uses GEGL warp (GIMP 3 native) with plug-in-iwarp fallback. Ideal for
+    Works like GIMP's Warp Transform tool in "Move pixels" mode. Ideal for
     subtle facial expression edits — e.g. turning a neutral mouth into a smile
-    by pushing the mouth corners upward.
+    by pushing the mouth corners upward. An active selection limits the change.
+    All vectors are applied together as one undo step.
 
     Parameters:
     - vectors: List of warp stroke dicts, each with:
-        - x, y      : center of the warp influence (pixels)
-        - dx, dy    : push direction — negative dy = push upward
-        - radius    : influence radius in pixels (default: 40)
-        - amount    : deform strength 0–1 (default: 0.3)
+        - x, y      : center of the warp influence (image pixels; required)
+        - dx, dy    : push direction — negative dy = push upward (required,
+                      not both 0; no longer than the layer's diagonal plus
+                      the radius)
+        - radius    : influence radius in pixels, 0.5-5000 (default: 40)
+        - amount    : deform strength, above 0 up to 1 (default: 0.3); at 1 the
+                      center moves about the full dx/dy
     - image_index: Which open image to edit (default: 0)
-    - layer_name: Target layer; omit to use the active/top layer
+    - layer_name: Target layer; omit to use the active/top layer. A layer group
+      or a layer with locked pixels is an error.
+
+    A vector whose influence doesn't reach the layer is an error, and nothing
+    is warped.
 
     Examples — make a character smile:
         warp_region(vectors=[
@@ -2785,7 +2793,7 @@ def warp_region(
             {"x": 255, "y": 370, "dx":  0, "dy": -4, "radius": 22, "amount": 0.30},
         ])
 
-    Returns: {"warped_vectors": N}
+    Returns: {"warped_vectors": N, "layer": name}
     """
     try:
         conn = get_gimp_connection()

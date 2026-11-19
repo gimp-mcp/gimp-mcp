@@ -4403,101 +4403,131 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    # gegl:warp's "size" (the brush diameter) is 1-10000; GLib ignores a value
+    # outside that and keeps the default of 40.
+    WARP_MIN_RADIUS = 0.5
+    WARP_MAX_RADIUS = 5000
+
     def _warp_region(self, params):
         """Warp / liquify a region of pixels to deform facial features.
 
-        Uses plug-in-iwarp (interactive warp) to push pixels in a direction.
-        Useful for subtle expressions: turning a neutral mouth into a smile by
-        pushing corners upward, etc.
+        Does what GIMP's Warp Transform tool does in "Move pixels" mode: each
+        vector is a gegl:warp stroke from (x, y) to (x + dx, y + dy), which builds
+        a displacement map, and gegl:map-relative moves the layer's pixels by it.
+        (gegl:warp's output is that map, not an image.) Pixels pulled in from
+        beyond the layer's edge repeat the edge. An active selection limits the
+        change, as it does for other filters.
 
         params:
           image_index  — which image
           layer_name   — optional layer
           vectors      — list of warp vectors: [{x, y, dx, dy, radius, amount}]
-                         x/y: pixel coords of warp center
+                         x/y: image coords of warp center
                          dx/dy: push direction in pixels (positive y = down)
                          radius: influence radius in pixels (default 40)
-                         amount: deform strength 0-1 (default 0.3)
+                         amount: deform strength 0-1 (default 0.3); at 1 the
+                                 center moves about the full dx/dy
         """
         try:
             from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
-            vectors     = params.get("vectors", [])
+            vectors     = params.get("vectors", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            pdb      = Gimp.get_pdb()
+            if drawable.is_group():
+                raise ValueError(
+                    f"'{drawable.get_name()}' is a layer group; warp a layer inside it"
+                )
+            if drawable.get_lock_content():
+                raise ValueError(f"layer '{drawable.get_name()}' has locked pixels")
+            if not isinstance(vectors, list) or not vectors:
+                raise ValueError("vectors must be a non-empty list of {x, y, dx, dy, ...}")
 
-            image.undo_group_start()
-            try:
-                for v in vectors:
-                    x      = float(v.get("x", 0))
-                    y      = float(v.get("y", 0))
-                    dx     = float(v.get("dx", 0))
-                    dy     = float(v.get("dy", 0))
-                    radius = float(v.get("radius", 40))
-                    amount = float(v.get("amount", 0.3))
+            _ok, off_x, off_y = drawable.get_offsets()
+            width, height = drawable.get_width(), drawable.get_height()
+            strokes = []
+            for i, v in enumerate(vectors):
+                if not isinstance(v, dict):
+                    raise ValueError(f"vector {i} must be an object with x, y, dx, dy")
+                missing = [k for k in ("x", "y", "dx", "dy") if v.get(k) is None]
+                if missing:
+                    raise ValueError(f"vector {i} is missing {', '.join(missing)}")
+                try:
+                    x, y, dx, dy = (float(v[k]) for k in ("x", "y", "dx", "dy"))
+                    radius = float(v["radius"] if v.get("radius") is not None else 40)
+                    amount = float(v["amount"] if v.get("amount") is not None else 0.3)
+                except (TypeError, ValueError):
+                    raise ValueError(f"vector {i}: x, y, dx, dy, radius and amount "
+                                     f"must be numbers") from None
+                if not all(math.isfinite(n) for n in (x, y, dx, dy, radius, amount)):
+                    raise ValueError(f"vector {i}: values must be finite numbers")
+                if dx == 0 and dy == 0:
+                    raise ValueError(f"vector {i}: dx and dy are both 0, nothing to push")
+                if not self.WARP_MIN_RADIUS <= radius <= self.WARP_MAX_RADIUS:
+                    raise ValueError(f"vector {i}: radius must be "
+                                     f"{self.WARP_MIN_RADIUS:g}-{self.WARP_MAX_RADIUS}, "
+                                     f"got {radius:g}")
+                # gegl:warp stamps the brush all along the stroke, so its time
+                # grows with the length (dx=1e9 takes seconds, holding the
+                # command lock). A longer push can't do more than this one.
+                max_push = math.hypot(width, height) + radius
+                if math.hypot(dx, dy) > max_push:
+                    raise ValueError(f"vector {i}: the push ({dx:g}, {dy:g}) is longer than "
+                                     f"the layer's diagonal plus the radius ({max_push:.0f})")
+                if not 0 < amount <= 1:
+                    raise ValueError(f"vector {i}: amount must be above 0 and at most 1, "
+                                     f"got {amount:g}")
+                # Layer coordinates: the buffers start at the layer's corner.
+                lx, ly = x - off_x, y - off_y
+                if (max(lx, lx + dx) + radius <= 0 or min(lx, lx + dx) - radius >= width
+                        or max(ly, ly + dy) + radius <= 0
+                        or min(ly, ly + dy) - radius >= height):
+                    raise ValueError(
+                        f"vector {i} at ({x:g}, {y:g}) doesn't reach layer "
+                        f"'{drawable.get_name()}' ({width}x{height} at {off_x}, {off_y})"
+                    )
+                strokes.append((lx, ly, dx, dy, radius, amount))
 
-                    # Try GEGL warp operation first (GIMP 3 native approach)
-                    try:
-                        Gegl.init(None)
-                        buf        = drawable.get_buffer()
-                        shadow_buf = drawable.get_shadow_buffer()
-                        graph      = Gegl.Node()
-
-                        src = graph.create_child("gegl:buffer-source")
-                        src.set_property("buffer", buf)
-
-                        warp = graph.create_child("gegl:warp")
-                        warp.set_property("behavior",    0)        # 0 = move
-                        warp.set_property("strength",    amount)
-                        warp.set_property("size",        radius)
-                        warp.set_property("hardness",    0.5)
-                        # stamp one warp stroke at (x,y) → (x+dx, y+dy)
-                        # GEGL warp builds strokes via the "stroke" property
-                        stroke = [(x, y), (x + dx, y + dy)]
-                        warp.set_property("stroke", stroke)
-
-                        out = graph.create_child("gegl:write-buffer")
-                        out.set_property("buffer", shadow_buf)
-
-                        src.link(warp)
-                        warp.link(out)
-                        out.process()
-
-                        shadow_buf.flush()
-                        drawable.merge_shadow(True)
-                        drawable.update(
-                            max(0, int(x - radius - abs(dx))),
-                            max(0, int(y - radius - abs(dy))),
-                            int(radius * 2 + abs(dx) * 2 + 4),
-                            int(radius * 2 + abs(dy) * 2 + 4),
-                        )
-                    except Exception as gegl_err:
-                        # Fallback: plug-in-iwarp if GEGL warp fails. If that is
-                        # missing or fails too, report it instead of a success.
-                        proc = pdb.lookup_procedure("plug-in-iwarp")
-                        if proc is None:
-                            raise RuntimeError(
-                                f"GEGL warp failed ({gegl_err}) and plug-in-iwarp is not available"
-                            ) from gegl_err
-                        cfg = proc.create_config()
-                        cfg.set_property("run-mode",      Gimp.RunMode.NONINTERACTIVE)
-                        cfg.set_property("image",         image)
-                        cfg.set_property("drawable",      drawable)
-                        cfg.set_property("cursor-x",      int(x))
-                        cfg.set_property("cursor-y",      int(y))
-                        cfg.set_property("pressure",      amount)
-                        cfg.set_property("move-max-dist", int(radius))
-                        cfg.set_property("deform-type",   0)  # 0 = MOVE
-                        cfg.set_property("x",             int(x + dx))
-                        cfg.set_property("y",             int(y + dy))
-                        self._run_pdb(proc, cfg)
-            finally:
-                image.undo_group_end()
+            Gegl.init(None)
+            graph = Gegl.Node()
+            src = graph.create_child("gegl:buffer-source")
+            src.set_property("buffer", drawable.get_buffer())
+            # The displacement map starts at zero; each stroke adds to it.
+            coords = graph.create_child("gegl:buffer-source")
+            coords.set_property("buffer", Gegl.Buffer.new("YA float", 0, 0, width, height))
+            last = coords
+            for lx, ly, dx, dy, radius, amount in strokes:
+                path = Gegl.Path()
+                path.parse_string(f"M {lx!r} {ly!r} L {lx + dx!r} {ly + dy!r}")
+                warp = graph.create_child("gegl:warp")
+                warp.set_property("behavior", 0)  # GEGL_WARP_BEHAVIOR_MOVE
+                warp.set_property("strength", amount * 100.0)
+                warp.set_property("size",     radius * 2.0)
+                warp.set_property("hardness", 0.5)
+                warp.set_property("stroke",   path)
+                if warp.get_property("stroke") is None:
+                    raise RuntimeError("gegl:warp did not take the stroke path")
+                last.link(warp)
+                last = warp
+            move = graph.create_child("gegl:map-relative")
+            move.set_property("abyss-policy", Gegl.AbyssPolicy.CLAMP)
+            src.link(move)
+            last.connect_to("output", move, "aux")
+            shadow = drawable.get_shadow_buffer()
+            out = graph.create_child("gegl:write-buffer")
+            out.set_property("buffer", shadow)
+            move.link(out)
+            out.process()
+            shadow.flush()
+            # One undo step; the selection, if any, masks the change.
+            drawable.merge_shadow(True)
+            drawable.update(0, 0, width, height)
 
             Gimp.displays_flush()
-            return {"status": "success", "results": {"warped_vectors": len(vectors)}}
+            return {"status": "success",
+                    "results": {"warped_vectors": len(strokes),
+                                "layer": drawable.get_name()}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
