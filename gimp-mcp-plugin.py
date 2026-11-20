@@ -4704,8 +4704,14 @@ class MCPPlugin(Gimp.PlugIn):
                     raise ValueError(f"size must be greater than 0 and at most 8192, got {new_size}")
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
+            # Checked before the undo group: GIMP's own refusal ("could not
+            # convert ... to type 'GimpTextLayer'") came after it, so the image
+            # was marked changed.
+            if not layer.is_text_layer():
+                raise ValueError(f"'{layer.get_name()}' is not a text layer")
             if new_text is None and new_font is None and new_size is None and color_obj is None:
-                return {"status": "success", "results": {"status": "success"}}
+                return {"status": "success",
+                        "results": {"status": "success", "layer_name": layer.get_name()}}
             # gimp-text-layer-set-font takes a Gimp.Font, not a name. Resolve it
             # before any edit. _resolve_font falls back to an alias or a default
             # font, so this only fails if GIMP has no fonts at all.
@@ -4746,7 +4752,9 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            results = {"status": "success"}
+            # New text renames a layer that still has GIMP's automatic name
+            # (its text); report the name the layer has now.
+            results = {"status": "success", "layer_name": layer.get_name()}
             if font_obj is not None:
                 results.update(self._font_result_fields(new_font, font_obj, substituted))
             return {"status": "success", "results": results}

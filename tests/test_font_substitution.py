@@ -64,6 +64,7 @@ class FakeTextLayer:
         FakeTextLayer._next_id += 1
         self._id = FakeTextLayer._next_id
         self._name = name
+        self.text = name
         self.font = font_obj
         self._width = width
         self._height = height
@@ -83,6 +84,9 @@ class FakeTextLayer:
 
     def get_font(self):
         return self.font
+
+    def is_text_layer(self):
+        return True
 
     def set_offsets(self, x, y):
         self.offsets = (x, y)
@@ -145,6 +149,13 @@ class FakeProc:
                     self._props.get("font"),
                 )
                 self._image.insert_layer(tl, None, 0)
+            elif self._name == "gimp-text-layer-set-text":
+                layer = self._props.get("layer")
+                if layer is not None:
+                    # Like GIMP, a text layer still named after its text follows it.
+                    if layer._name == layer.text:
+                        layer._name = self._props.get("text")
+                    layer.text = self._props.get("text")
             elif self._name == "gimp-text-layer-set-font":
                 layer = self._props.get("layer")
                 if layer is not None:
@@ -496,7 +507,7 @@ def main():
         res = r.get("results", {})
         check("edit_text exact match reports font='Serif' without requested_font or warning",
               r["status"] == "success"
-              and res == {"status": "success", "font": "Serif"}
+              and res == {"status": "success", "layer_name": layer_name, "font": "Serif"}
               and layer_obj.get_font().get_name() == "Serif",
               str(r))
 
@@ -504,7 +515,7 @@ def main():
         res = r.get("results", {})
         check("edit_text 'Serif ' matches 'Serif' without requested_font or warning",
               r["status"] == "success"
-              and res == {"status": "success", "font": "Serif"}
+              and res == {"status": "success", "layer_name": layer_name, "font": "Serif"}
               and layer_obj.get_font().get_name() == "Serif",
               str(r))
 
@@ -513,7 +524,7 @@ def main():
             res = r.get("results", {})
             check(f"edit_text blank font {blank!r} leaves the font unchanged and adds no font fields",
                   r["status"] == "success"
-                  and res == {"status": "success"}
+                  and res == {"status": "success", "layer_name": layer_name}
                   and layer_obj.get_font().get_name() == "Serif",
                   str(r))
 
@@ -521,7 +532,8 @@ def main():
         res = r.get("results", {})
         check("edit_text alias 'Sans' reports font='Sans-serif', requested_font='Sans', no warning",
               r["status"] == "success"
-              and res == {"status": "success", "font": "Sans-serif", "requested_font": "Sans"}
+              and res == {"status": "success", "layer_name": layer_name, "font": "Sans-serif",
+                          "requested_font": "Sans"}
               and layer_obj.get_font().get_name() == "Sans-serif",
               str(r))
 
@@ -531,6 +543,7 @@ def main():
               r["status"] == "success"
               and res == {
                   "status": "success",
+                  "layer_name": layer_name,
                   "font": "Sans-serif",
                   "requested_font": "Comic Snas",
                   "warning": expected_warning,
@@ -540,9 +553,13 @@ def main():
 
         r = plugin._edit_text({"layer_name": layer_name, "text": "Renamed only"})
         res = r.get("results", {})
-        check("edit_text without font omits font, requested_font and warning",
-              r["status"] == "success" and res == {"status": "success"},
+        check("edit_text without font omits font, requested_font and warning, and reports"
+              " the auto-named layer's new name",
+              r["status"] == "success"
+              and res == {"status": "success", "layer_name": "Renamed only"}
+              and layer_obj.get_name() == "Renamed only",
               str(r))
+        layer_name = res.get("layer_name", layer_name)
 
         set_fonts()
         r = plugin._edit_text({"layer_name": layer_name, "font": "Comic Snas"})

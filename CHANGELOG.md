@@ -77,6 +77,11 @@ right command when the versions differ.
   GIMP's number (`"28"`). A mode those tools don't take is named after GIMP
   (`ADDITION`, `NORMAL_LEGACY`). `list_layers` reports `offsets` as `[x, y]`; it used to
   be `[true, x, y]`. Based on #63 by @yonggandewo12.
+- `edit_text` on a layer that isn't a text layer is an error naming it, and leaves the
+  image unchanged. It used to fail with "could not convert ... GimpTextLayer" and mark the
+  image changed. `edit_text` returns the layer's `layer_name` after the edit: new text
+  renames a text layer that still has GIMP's automatic name (its text). Based on #63 by
+  @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

@@ -2460,9 +2460,12 @@ def edit_text(
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns {status}, plus font (the applied font) when a font name was given,
-    requested_font when it differs from font, and warning when a fallback font
-    was substituted.
+    Returns {status, layer_name}, plus font (the applied font) when a font name was
+    given, requested_font when it differs from font, and warning when a fallback font
+    was substituted. layer_name is the layer's name after the edit: GIMP names a text
+    layer after its text until it is renamed, so new text renames such a layer; a
+    renamed layer keeps its name. A layer that isn't a text layer is an error, and
+    nothing changes.
     """
     try:
         conn = get_gimp_connection()
