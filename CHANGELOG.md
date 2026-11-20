@@ -196,6 +196,17 @@ right command when the versions differ.
   reported success. `-0.5`, `1.9` and `true` picked a nearby index the same way, and a
   bad `layer_index` was ignored when a layer name was also given. Based on #63 by
   @yonggandewo12.
+- Tools that change a layer's pixels (the adjustment, filter, fill and drawing tools,
+  `gradient_fill` and `warp_region`) refuse a layer group, a layer with locked pixels and a
+  layer in a group with locked pixels, with an error saying which, and change nothing.
+  They used to fail with GIMP's message, or none, and leave the image marked as changed.
+  `sharpen`, `blur`, `denoise`, `apply_gaussian_blur`, `apply_pixelate`, `apply_emboss`,
+  `apply_vignette` and `apply_noise` were worse: they changed locked pixels and reported
+  success, and on a layer group reported success without changing anything.
+  `apply_drop_shadow` refuses a layer group, which it failed on the same way; it still
+  shadows a locked layer, which it only reads. `convert_color_mode` RGBA or GRAYA refuses
+  a locked layer that needs alpha before converting; it used to convert the image, then
+  fail with "Adding alpha to layer 'X' failed: success".
 
 ### Changed
 - Some results have a new format, so clients that read them may need updating (details

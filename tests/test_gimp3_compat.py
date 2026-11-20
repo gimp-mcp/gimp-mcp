@@ -63,6 +63,16 @@ class FakeLayer:
     def add_alpha(self):
         pass
 
+    # Not a group, unlocked, at the top level: the tools may change its pixels.
+    def is_group(self):
+        return False
+
+    def get_lock_content(self):
+        return False
+
+    def get_parent(self):
+        return None
+
 
 # Live display windows per image id, mirroring GIMP's rules that an image
 # cannot be deleted while any display still shows it, and that GIMP deletes

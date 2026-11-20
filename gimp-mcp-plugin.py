@@ -2638,6 +2638,40 @@ class MCPPlugin(Gimp.PlugIn):
         Gimp.context_set_opacity(100.0)
         Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
 
+    @staticmethod
+    def _pixel_lock(layer):
+        """Why layer's pixels are locked, or None: its own lock or a group's.
+
+        A group's "Lock pixels" covers the layers inside it, though their own
+        flag stays off.
+        """
+        item = layer
+        while item is not None:
+            if item.get_lock_content():
+                return (f"layer {layer.get_name()!r} has locked pixels; unlock them first"
+                        if item is layer else
+                        f"layer {layer.get_name()!r} is in group {item.get_name()!r}, which "
+                        f"has locked pixels; unlock the group first")
+            item = item.get_parent()
+        return None
+
+    @classmethod
+    def _check_writable(cls, drawable):
+        """Raise unless drawable's pixels can be changed.
+
+        GIMP refuses to change a layer group's pixels or locked ones, but the
+        PDB procedures refuse only once called, inside the caller's undo
+        group, which leaves the image marked as changed; merge_filter()
+        ignores the lock and writes through it, and on a group merges
+        nothing. Callers check before changing anything.
+        """
+        if drawable.is_group():
+            raise ValueError(f"{drawable.get_name()!r} is a layer group, whose pixels can't "
+                             f"be changed; use a layer inside it")
+        reason = cls._pixel_lock(drawable)
+        if reason:
+            raise ValueError(reason)
+
     def _apply_gegl_filter(self, image, drawable, op_name, props):
         """Apply a GEGL operation to a drawable and merge it destructively.
 
@@ -2961,6 +2995,7 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name  = params.get("layer_name", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 # No fallback: levels with fixed parameters can't auto-stretch,
@@ -3062,6 +3097,7 @@ class MCPPlugin(Gimp.PlugIn):
 
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             channel  = self._option("channel", channel_str, CHANNEL_MAP)
 
             # Checked even when points replace it: a typo is still an error.
@@ -3113,6 +3149,7 @@ class MCPPlugin(Gimp.PlugIn):
             contrast    = float(params.get("contrast", 0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # gimp-drawable-brightness-contrast works in linear light on GIMP 3,
             # so even +8/+12 crushes everything below ~56/255 to black. Apply the
             # same formula as a perceptual-space LUT through curves instead.
@@ -3156,6 +3193,7 @@ class MCPPlugin(Gimp.PlugIn):
             color_range  = params.get("color_range", "all")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             hue_range = self._option("color_range", color_range, HUE_RANGE_MAP)
             image.undo_group_start()
             try:
@@ -3192,6 +3230,7 @@ class MCPPlugin(Gimp.PlugIn):
             range_str      = params.get("range", "midtones")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             color_range = self._option("range", range_str, RANGE_MAP)
             image.undo_group_start()
             try:
@@ -3221,6 +3260,7 @@ class MCPPlugin(Gimp.PlugIn):
             threshold   = int(params.get("threshold", 0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -3255,6 +3295,7 @@ class MCPPlugin(Gimp.PlugIn):
             radius_y    = float(params.get("radius_y", 5.0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -3287,6 +3328,7 @@ class MCPPlugin(Gimp.PlugIn):
             strength    = int(params.get("strength", 50))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:noise-reduction", {
@@ -3315,6 +3357,7 @@ class MCPPlugin(Gimp.PlugIn):
             mode_str    = params.get("mode", "luminosity")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             mode = self._option("mode", mode_str, MODE_MAP)
             image.undo_group_start()
             try:
@@ -3337,6 +3380,7 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name  = params.get("layer_name", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 proc = self._lookup_pdb("gimp-drawable-invert")
@@ -4202,6 +4246,7 @@ class MCPPlugin(Gimp.PlugIn):
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color first, so a bad color fails before the selection
             # is touched.
             fg = self._color(color_str)
@@ -4271,6 +4316,7 @@ class MCPPlugin(Gimp.PlugIn):
                               "fill_layer tool for a whole-layer fill."),
                 }
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color before the undo group opens: starting a group
             # clears GIMP's redo history, even if nothing is painted.
             # With no color ("" or None: the MCP server sends None when it's
@@ -4344,6 +4390,7 @@ class MCPPlugin(Gimp.PlugIn):
                 raise ValueError(f"width must be between 1 and 10000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color before the undo group opens: starting a group
             # clears GIMP's redo history, even if nothing is painted.
             # "" counts as omitted: clients often send it for optional arguments.
@@ -4384,6 +4431,7 @@ class MCPPlugin(Gimp.PlugIn):
                 raise ValueError(f"line_width must be more than 0 and at most 2000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
             # "" counts as omitted: clients often send it for optional arguments.
@@ -4428,6 +4476,7 @@ class MCPPlugin(Gimp.PlugIn):
                 raise ValueError(f"line_width must be more than 0 and at most 2000, got {line_width}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
             # "" counts as omitted: clients often send it for optional arguments.
@@ -4467,6 +4516,7 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
             fg = self._color(color_str)
@@ -4500,6 +4550,7 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             # Parse the color first, so a bad color fails before the selection
             # is touched (the cleanup below clears it).
             fg = self._color(color_str)
@@ -4540,6 +4591,7 @@ class MCPPlugin(Gimp.PlugIn):
             })
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             w = image.get_width()
             h = image.get_height()
 
@@ -4886,20 +4938,7 @@ class MCPPlugin(Gimp.PlugIn):
             vectors     = params.get("vectors", None)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            if drawable.is_group():
-                raise ValueError(
-                    f"'{drawable.get_name()}' is a layer group; warp a layer inside it"
-                )
-            # A group's pixel lock applies to the layers inside it too.
-            item = drawable
-            while item is not None:
-                if item.get_lock_content():
-                    raise ValueError(
-                        f"layer '{drawable.get_name()}' has locked pixels"
-                        if item is drawable else
-                        f"layer '{drawable.get_name()}' is in group '{item.get_name()}', "
-                        f"which has locked pixels")
-                item = item.get_parent()
+            self._check_writable(drawable)
             if not isinstance(vectors, list) or not vectors:
                 raise ValueError("vectors must be a non-empty list of {x, y, dx, dy, ...}")
 
@@ -5053,6 +5092,10 @@ class MCPPlugin(Gimp.PlugIn):
             shadow_color = self._color(color_str)
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            if drawable.is_group():
+                # Duplicating a group gives a group, whose pixels can't be filled.
+                raise ValueError(f"{drawable.get_name()!r} is a layer group; use a layer "
+                                 f"inside it, or merge the group first")
             image.undo_group_start()
             try:
 
@@ -5168,6 +5211,7 @@ class MCPPlugin(Gimp.PlugIn):
             radius      = float(params.get("radius", 5.0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:gaussian-blur", {
@@ -5189,6 +5233,7 @@ class MCPPlugin(Gimp.PlugIn):
             block_size  = int(params.get("block_size", 10))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:pixelize", {
@@ -5212,6 +5257,7 @@ class MCPPlugin(Gimp.PlugIn):
             depth       = float(params.get("depth", 2))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:emboss", {
@@ -5238,6 +5284,7 @@ class MCPPlugin(Gimp.PlugIn):
                 return {"status": "error", "error": f"shape must be one of {', '.join(VIGNETTE_SHAPES)}"}
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:vignette", {
@@ -5260,6 +5307,7 @@ class MCPPlugin(Gimp.PlugIn):
             amount      = float(params.get("amount", 0.2))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            self._check_writable(drawable)
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:noise-hsv", {
@@ -5812,6 +5860,13 @@ class MCPPlugin(Gimp.PlugIn):
                                  f"{image.get_precision().value_nick!r}. Convert it first "
                                  f"(call_api: image.convert_precision("
                                  f"Gimp.Precision.U8_NON_LINEAR))."}
+            for layer in no_alpha:
+                # GIMP refuses alpha for locked pixels only inside the undo
+                # group below, after converting, leaving the image changed.
+                reason = self._pixel_lock(layer)
+                if reason:
+                    return {"status": "error",
+                            "error": f"{mode} needs alpha on every layer, but {reason}"}
             if not convert and not no_alpha:
                 # Nothing to do; an empty undo group would still mark the image dirty.
                 return {"status": "success", "results": {"status": "success", "mode": mode}}

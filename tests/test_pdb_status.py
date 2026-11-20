@@ -64,6 +64,13 @@ class FakeLayer:
     def is_group(self):
         return False
 
+    # Unlocked, at the top level: the tools may change its pixels.
+    def get_lock_content(self):
+        return False
+
+    def get_parent(self):
+        return None
+
     def set_offsets(self, *a):
         CALLS.append(("layer", "set_offsets", a))
         return True
@@ -121,7 +128,7 @@ class FakePDB:
         return FakeProc(name, status, message)
 
 
-class FakeDrawable:
+class FakeDrawable(FakeLayer):
     """Drawable whose curves_spline() returns a preset result, as libgimp does."""
 
     def __init__(self, curves_result):
@@ -215,7 +222,7 @@ class FakeImage:
         pass
 
     def get_selected_layers(self):
-        return ["layer"]
+        return [FakeLayer()]
 
     def get_layers(self):
         return [FakeLayer()]
@@ -574,7 +581,8 @@ def main():
                                    get_width=lambda: 10,
                                    get_height=lambda: 10,
                                    is_valid=lambda: True)
-    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(copy=lambda: shadow)
+    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(
+        copy=lambda: shadow, is_group=lambda: False)
     scenario({})
     r = plugin._apply_drop_shadow({"blur_radius": 7.5})
     check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
