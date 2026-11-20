@@ -275,7 +275,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 |---|---|
 | `select_rectangle` | Rectangular marquee |
 | `select_ellipse` | Elliptical marquee |
-| `select_by_color` | Select by color (global) |
+| `select_by_color` | Select by color (global); anti-aliased edges need a higher `threshold` or a `modify_selection` grow |
 | `select_all` / `select_none` | Select all / deselect |
 | `invert_selection` | Invert selection |
 | `modify_selection` | Grow, shrink, feather, or border |

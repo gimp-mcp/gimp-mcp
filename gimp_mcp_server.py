@@ -1612,9 +1612,18 @@ def select_by_color(
 ) -> dict:
     """Select regions by color similarity.
 
+    The threshold is a color-similarity tolerance in 0-255 sRGB units: a pixel
+    is selected when its color is within that distance of the target. Anti-
+    aliased edges are a gradient between the target and the surrounding color,
+    so at the default threshold 15 only the solid core of a shape is selected
+    and its anti-aliased fringe is missed. To select a full anti-aliased shape,
+    raise the threshold toward 128 and/or follow with modify_selection
+    (operation "grow") to bridge the fringe.
+
     Parameters:
     - color: Target color as CSS name, hex (#rrggbb), or rgb() string
-    - threshold: Color similarity tolerance 0-255 (default 15)
+    - threshold: Color similarity tolerance in 0-255 sRGB units (default 15);
+      see above for anti-aliased edges
     - operation: "replace" (default), "add", "subtract", "intersect"
     - image_index: Target image index (default 0)
     - layer_name: Layer to sample from; defaults to active layer
