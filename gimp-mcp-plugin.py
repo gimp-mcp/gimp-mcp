@@ -4198,28 +4198,43 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             # Parse the color first, so a bad color fails before the selection
-            # is touched (the cleanup below clears it).
+            # is touched.
             fg = self._color(color_str)
             image.undo_group_start()
             self._push_paint_context()
+            saved = None
             try:
-                # Deliberately NOT saving/restoring a pre-existing selection:
-                # restoring via Gimp.Image.select_item and then deleting the
-                # saved channel corrupts the image's selection state when run
-                # from the socket worker thread on GIMP 3.2 (later strokes then
-                # fail with "There is no selection to stroke"). Whole-layer
-                # fills are the point of this tool; fill_selection handles
-                # fills bounded by a selection.
-                Gimp.Selection.all(image)
+                # edit_fill() fills only the selection, and with none the
+                # whole layer, also any part outside the canvas (select all
+                # stops at the canvas edge). So clear the selection for the
+                # fill and put the caller's back afterwards (it used to be
+                # cleared). Drawable.fill() would ignore the selection, but
+                # also the layer's alpha lock.
+                if not Gimp.Selection.is_empty(image):
+                    # A copy that isn't added to the image: an added channel
+                    # becomes the selected item, and once removed it leaves no
+                    # layer selected (a later stroke in a displayed image then
+                    # failed with "There is no selection to stroke").
+                    saved = self._check_item(image.get_selection().copy(),
+                                             "Copying the selection")
+                    self._check_ok(Gimp.Selection.none(image), "Clearing the selection")
                 Gimp.context_set_foreground(fg)
                 self._check_ok(Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND),
                                "Filling the layer")
             finally:
-                # Clear the temporary selection even if the fill failed, so it
-                # doesn't restrict later edits.
-                Gimp.Selection.none(image)
-                Gimp.context_pop()
-                image.undo_group_end()
+                # Also when the fill failed. combine_masks() copies the mask
+                # exactly (select_item() would apply the context's feather).
+                # The context and undo group close even if that fails.
+                try:
+                    if saved is not None:
+                        try:
+                            self._check_ok(image.get_selection().combine_masks(
+                                saved, Gimp.ChannelOps.REPLACE, 0, 0), "Restoring the selection")
+                        finally:
+                            saved.delete()
+                finally:
+                    Gimp.context_pop()
+                    image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:

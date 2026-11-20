@@ -98,6 +98,12 @@ right command when the versions differ.
   still succeeds and lists the others in `errors`. A `name_pattern` with fields other than
   `{name}` and `{index}` is an error before anything is written; it used to fail for each
   image with only the field's name (`'bogus'`). Based on #63 by @yonggandewo12.
+- `fill_layer` also fills the parts of a layer outside the canvas, as its description
+  promises; it used to fill only the part inside the canvas.
+- `fill_layer` leaves the selection as it was; it used to clear it. It still fills the
+  whole layer. `get_histogram`'s description no longer lists `min` and `max`, which it
+  never returned, and says that the values are on a 0-255 scale and that only the
+  selected pixels count when there is a selection. Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

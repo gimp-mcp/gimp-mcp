@@ -2078,13 +2078,14 @@ def fill_layer(
 ) -> dict:
     """Fill an entire layer with a solid color.
 
-    Clears any active selection; use fill_selection to fill only the
-    selection.
-
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string
     - layer_name: Layer to fill; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
+
+    Fills the whole layer, also any part outside the canvas, whatever is selected,
+    and leaves the selection as it was (fill_selection fills only the selection). A layer with locked alpha keeps its
+    transparent pixels transparent.
 
     Returns status dict.
     """
@@ -3195,7 +3196,11 @@ def get_histogram(
     - channel: "value" (all; default), "red", "green", "blue", "alpha"
     - image_index: Target image index (default 0)
 
-    Returns: {mean, median, std_dev, min, max, pixels, count}
+    Returns: {mean, median, std_dev, pixels, count}
+    - mean, median, std_dev: on a 0-255 scale, whatever the image's precision
+    - pixels: number of pixels counted; with a selection, only the selected pixels
+      count, so select_none first for the whole layer
+    - count: pixels in the counted range, which is the full range, so it equals pixels
     """
     try:
         conn = get_gimp_connection()

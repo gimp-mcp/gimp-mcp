@@ -294,6 +294,11 @@ def install_gi_stub():
                 # Non-empty selection so _fill_selection proceeds to edit_fill.
                 return (True, True, 0, 0, 1, 1)
 
+            @staticmethod
+            def is_empty(image):
+                # fill_layer: no selection to keep, so it clears its own.
+                return True
+
         class Drawable:
             @staticmethod
             def edit_fill(drawable, fill_type):
@@ -628,13 +633,19 @@ def main():
     # Direct libgimp calls that return False must not report success (#115).
     FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
     for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
-                            ("_fill_ellipse", {"width": 10, "height": 10}),
-                            ("_fill_layer", {})):
+                            ("_fill_ellipse", {"width": 10, "height": 10})):
         scenario({})
         r = getattr(plugin, handler)(params)
         check(f"{handler[1:]} reports an error and clears its selection when the fill fails",
               None if r["status"] == "error" and "contents are locked" in r["error"]
               and CALLS[-1] == ("select", "none") else f"got {r}, calls {CALLS}")
+    # fill_layer fills with no selection (the whole layer, also outside the
+    # canvas), so with none to begin with it never touches the selection.
+    scenario({})
+    r = plugin._fill_layer({})
+    check("fill_layer reports an error when the fill fails, and leaves no selection",
+          None if r["status"] == "error" and "contents are locked" in r["error"]
+          and not any(c[0] == "select" for c in CALLS) else f"got {r}, calls {CALLS}")
 
     for handler, params in (("_fill_selection", {}),
                             ("_draw_line", {"x2": 10, "y2": 10}),
