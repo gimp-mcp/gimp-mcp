@@ -103,12 +103,12 @@ def value():
 def main():
     made_image = False
     try:
-        py(HELPERS,
-           "_ac_img = Gimp.Image.new(4, 4, Gimp.ImageBaseType.RGB)",
-           "_ac_layer = Gimp.Layer.new(_ac_img, 'bg', 4, 4, Gimp.ImageType.RGB_IMAGE,"
+        py(HELPERS, "_ac_img = Gimp.Image.new(4, 4, Gimp.ImageBaseType.RGB)")
+        # Owned from here on, so cleanup also runs if the rest of the setup fails.
+        made_image = True
+        py("_ac_layer = Gimp.Layer.new(_ac_img, 'bg', 4, 4, Gimp.ImageType.RGB_IMAGE,"
            " 100, Gimp.LayerMode.NORMAL)",
            "_ac_img.insert_layer(_ac_layer, None, 0)")
-        made_image = True
         py("_ac_fill(128)")
         check(value() == [128, False], "test setup: the layer is not clean gray 128", value())
 
@@ -183,8 +183,13 @@ def main():
             check(value() == before and not before[1],
                   f"channel {channel!r} on a {kind} layer changed the image", (before, value()))
             if kind == 'GRAYA':
-                r = curves(preset='lighten', channel='alpha')
+                # An inverting curve, so a success that changes nothing is caught:
+                # alpha goes from opaque (255) to transparent (0).
+                r = curves(points=[[0, 255], [255, 0]], channel='alpha')
                 check(r.get('status') == 'success', "channel 'alpha' on a GRAYA layer failed", r)
+                alpha = py("print(_ac_layer.get_buffer().get(Gegl.Rectangle.new(0, 0, 1, 1), 1.0,"
+                           " \"Y'A u8\", Gegl.AbyssPolicy.NONE)[1])")
+                check(alpha == "0", "the alpha curve on a GRAYA layer didn't invert alpha", alpha)
             py("_ac_img.undo_disable()", "_ac_img.convert_rgb()", "_ac_img.undo_enable()")
         print("PASS: a channel the layer doesn't have, or an indexed layer, is an error that"
               " changes nothing")

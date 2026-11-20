@@ -65,8 +65,10 @@ def main():
     try:
         py("import json",
            "from gi.repository import Gegl",
-           "_md_img = Gimp.Image.new(40, 30, Gimp.ImageBaseType.RGB)",
-           "_md_img.set_resolution(150.0, 200.0)",
+           "_md_img = Gimp.Image.new(40, 30, Gimp.ImageBaseType.RGB)")
+        # Owned from here on, so cleanup also runs if the rest of the setup fails.
+        made_image = True
+        py("_md_img.set_resolution(150.0, 200.0)",
            "_l = Gimp.Layer.new(_md_img, 'plain', 40, 30, Gimp.ImageType.RGB_IMAGE,"
            " 100, Gimp.LayerMode.NORMAL)",
            "_md_img.insert_layer(_l, None, 0)",
@@ -77,7 +79,6 @@ def main():
            "_md_img.insert_layer(_g, None, 0)",
            "_c = Gimp.Channel.new(_md_img, 'mask', 40, 30, 50.0, Gegl.Color.new('#ff8000'))",
            "_md_img.insert_channel(_c, None, 0)")
-        made_image = True
         check(py("print(Gimp.get_images()[0].get_id() == _md_img.get_id())") == "True",
               "the test image is not Gimp.get_images()[0]")
 

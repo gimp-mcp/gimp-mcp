@@ -123,6 +123,22 @@ def main():
                 value = histogram('value', '_HP')
                 check(abs(value['mean'] - 255) < 0.5 and abs(value['median'] - 255) < 1.5,
                       f"a white layer's mean at {precision} isn't 255", value)
+                # Half black, half white: std_dev is 127.5, so its scaling is checked too.
+                py("Gimp.context_push()\n"
+                   "try:\n"
+                   "    Gimp.context_set_feather(False)\n"
+                   "    Gimp.context_set_opacity(100.0)\n"
+                   "    Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)\n"
+                   "    Gimp.context_set_foreground(Gegl.Color.new('#000000'))\n"
+                   "    _HP.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, 5, 10)\n"
+                   "    _p.edit_fill(Gimp.FillType.FOREGROUND)\n"
+                   "    Gimp.Selection.none(_HP)\n"
+                   "finally:\n"
+                   "    Gimp.context_pop()")
+                value = histogram('value', '_HP')
+                check(abs(value['mean'] - 127.5) < 1.5 and abs(value['std_dev'] - 127.5) < 1.5,
+                      f"a half black, half white layer at {precision} doesn't have mean and"
+                      " std_dev 127.5", value)
             finally:
                 py("_HP.delete() if _HP.is_valid() else None")
         print("PASS: the values are on a 0-255 scale at every precision")

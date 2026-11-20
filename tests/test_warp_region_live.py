@@ -62,6 +62,13 @@ def py(*lines):
     return ''.join(r.get('results') or []).strip()
 
 
+def crisp_rect(img, x, y, w, h):
+    """Code that selects a rectangle with feather off, whatever the context's feather."""
+    return (f"Gimp.context_push()\ntry:\n    Gimp.context_set_feather(False)\n"
+            f"    {img}.select_rectangle(Gimp.ChannelOps.REPLACE, {x}, {y}, {w}, {h})\n"
+            "finally:\n    Gimp.context_pop()")
+
+
 def fail(msg):
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -225,7 +232,7 @@ def main():
         print("PASS: on a layer with alpha, pulled-in transparency leaves no dark fringe")
 
         new_image()
-        py("_wr_img.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, 64, 32)")
+        py(crisp_rect("_wr_img", 0, 0, 64, 32))
         r = warp([{'x': 32, 'y': 32, 'dx': 12, 'dy': 0, 'radius': 16, 'amount': 1}])
         check(r.get('status') == 'success', "warp with a selection failed", r)
         rows = json.loads(py("print(_wr_changed_rows(_wr_before))"))

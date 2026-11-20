@@ -57,6 +57,13 @@ def py(*lines):
     return ''.join(r.get('results') or []).strip()
 
 
+def crisp_rect(img, x, y, w, h):
+    """Code that selects a rectangle with feather off, whatever the context's feather."""
+    return (f"Gimp.context_push()\ntry:\n    Gimp.context_set_feather(False)\n"
+            f"    {img}.select_rectangle(Gimp.ChannelOps.REPLACE, {x}, {y}, {w}, {h})\n"
+            "finally:\n    Gimp.context_pop()")
+
+
 def fail(msg):
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -131,7 +138,7 @@ def main():
         made_image = True
         new_test_image()
 
-        py("_sbc_img.select_rectangle(Gimp.ChannelOps.REPLACE, 5, 5, 10, 10)",
+        py(crisp_rect("_sbc_img", 5, 5, 10, 10),
            "_sbc_img.clean_all()")
         n_images = py("print(len(Gimp.get_images()))")
         for op in ('replace', 'add', 'subtract', 'intersect'):
@@ -161,7 +168,7 @@ def main():
             # 255 matches every pixel, 0 only the red rectangle.
             want = "True 20 10 30 25" if good == 0.0 else "True 0 0 100 80"
             check(bounds() == want, f"threshold={good!r} selected the wrong pixels", bounds())
-            py("_sbc_img.select_rectangle(Gimp.ChannelOps.REPLACE, 5, 5, 10, 10)",
+            py(crisp_rect("_sbc_img", 5, 5, 10, 10),
                "_sbc_img.clean_all()")
         print("PASS: a threshold that isn't a whole number 0-255 is an error; 0.0 and '255' work")
 

@@ -1253,12 +1253,12 @@ class MCPPlugin(Gimp.PlugIn):
                              f"[\"pyGObject-eval\", [\"1 + 1\"]]; got {args!r:.200}"}
         mode, code = args
         if mode in self.EVAL_MODES:
-            print(f"evaluating exprs: {code}")
+            print(f"evaluating exprs: {code!r:.500}")
             return {"status": "success", "results": [str(eval(e, self.context)) for e in code]}
-        print(f"Executing commands: {code}")
+        print(f"Executing commands: {code!r:.500}")
         result = {"status": "success",
                   "results": [exec_and_get_results(c, self.context) for c in code]}
-        print(f"Command result: {result}")
+        print(f"Command result: {result!r:.500}")
         return result
 
     def _get_current_image_bitmap(self, params=None):

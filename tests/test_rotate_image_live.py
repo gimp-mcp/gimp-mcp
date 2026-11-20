@@ -67,6 +67,13 @@ def py(*lines):
     return ''.join(r.get('results') or []).strip()
 
 
+def crisp_rect(img, x, y, w, h):
+    """Code that selects a rectangle with feather off, whatever the context's feather."""
+    return (f"Gimp.context_push()\ntry:\n    Gimp.context_set_feather(False)\n"
+            f"    {img}.select_rectangle(Gimp.ChannelOps.REPLACE, {x}, {y}, {w}, {h})\n"
+            "finally:\n    Gimp.context_pop()")
+
+
 def fail(msg):
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -155,7 +162,7 @@ def second_image():
        "_c = Gimp.Channel.new(_rot_img, 'mask', 200, 100, 50.0, Gegl.Color.new('#00ff00'))",
        "_rot_img.insert_channel(_c, None, 0)",
        # A 20x20 square at (0, 40), centre (10, 50), in the channel and the selection.
-       "_rot_img.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 40, 20, 20)",
+       crisp_rect("_rot_img", 0, 40, 20, 20),
        "Gimp.Drawable.edit_fill(_c, Gimp.FillType.WHITE)",
        "Gimp.context_set_transform_direction(Gimp.TransformDirection.BACKWARD)")
 
@@ -172,7 +179,10 @@ def second_image():
           "the selection did not turn clockwise about the centre", f"{b}, want centre {want}")
     st = state()
     check(st['channels'] == ['mask'], "a channel was lost or left behind", st)
-    b = json.loads(py("_rot_img.select_item(Gimp.ChannelOps.REPLACE, _c)",
+    # select_item uses the context's feather too: read the channel back crisp.
+    b = json.loads(py("Gimp.context_push()\ntry:\n    Gimp.context_set_feather(False)\n"
+                      "    _rot_img.select_item(Gimp.ChannelOps.REPLACE, _c)\n"
+                      "finally:\n    Gimp.context_pop()",
                       "_b = Gimp.Selection.bounds(_rot_img)",
                       "print(json.dumps([_b[1], _b[2], _b[3], _b[4], _b[5]]))"))
     check(b[0] and near(((b[1] + b[3]) / 2, (b[2] + b[4]) / 2), want),
@@ -187,7 +197,7 @@ def second_image():
        " 100, Gimp.LayerMode.NORMAL)",
        "_rot_img.insert_layer(_k, _g, 0)",
        "_k.set_lock_position(True)",
-       "_rot_img.select_rectangle(Gimp.ChannelOps.REPLACE, 5, 5, 10, 10)",
+       crisp_rect("_rot_img", 5, 5, 10, 10),
        "_rot_img.clean_all()")
     before = (size(), state(), selection_bounds())
     r = rotate(30)
@@ -237,6 +247,8 @@ def second_image():
 
 def main():
     made_image = False
+    # second_image() sets BACKWARD; cleanup puts back what the context had.
+    py("_rot_direction = Gimp.context_get_transform_direction()")
     try:
         W, H = 200, 100
         py("import json",
@@ -270,7 +282,7 @@ def main():
            "_sid = _p.bezier_stroke_new_moveto(10, 10)",
            "_p.bezier_stroke_lineto(_sid, 190, 90)",
            # The selection: a 20x20 square at (0, 0), centre (10, 10).
-           "_rot_img.select_rectangle(Gimp.ChannelOps.REPLACE, 0, 0, 20, 20)",
+           crisp_rect("_rot_img", 0, 0, 20, 20),
            "_rot_img.clean_all()")
         made_image = True
         check(size() == [W, H], "setup failed", size())
@@ -375,7 +387,7 @@ def main():
         return 0
     finally:
         try:
-            py("Gimp.context_set_transform_direction(Gimp.TransformDirection.FORWARD)",
+            py("Gimp.context_set_transform_direction(_rot_direction)",
                "if '_rot_orig_tr' in globals(): _rot_stub_cls.transform_rotate = _rot_orig_tr")
         except (SystemExit, OSError):
             print("  (cleanup) could not restore the transform direction or "

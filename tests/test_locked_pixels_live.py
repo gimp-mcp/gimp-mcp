@@ -89,10 +89,12 @@ def _lk_fill(img, d):
         Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
         Gimp.context_set_feather(False)
         Gimp.context_set_foreground(Gegl.Color.new("#806040"))
-        d.edit_fill(Gimp.FillType.FOREGROUND)
+        if not d.edit_fill(Gimp.FillType.FOREGROUND):
+            raise RuntimeError("test setup: filling the test layer failed")
         Gimp.context_set_foreground(Gegl.Color.new("#ffffff"))
         img.select_rectangle(Gimp.ChannelOps.REPLACE, 16, 16, 32, 32)
-        d.edit_fill(Gimp.FillType.FOREGROUND)
+        if not d.edit_fill(Gimp.FillType.FOREGROUND):
+            raise RuntimeError("test setup: filling the test layer failed")
         Gimp.Selection.none(img)
     finally:
         Gimp.context_pop()
@@ -105,24 +107,23 @@ def _lk_make(case, base='RGB', alpha=True):
     img = Gimp.Image.new(64, 64, getattr(Gimp.ImageBaseType, base))
     kind = getattr(Gimp.ImageType, f"{base}{'A' if alpha else ''}_IMAGE")
     layer = Gimp.Layer.new(img, "L", 64, 64, kind, 100, Gimp.LayerMode.NORMAL)
+    _LK = (img, layer)  # set now, so _lk_delete() also cleans up a failed setup
     if case == 'own':
         img.insert_layer(layer, None, 0)
-        layer.set_lock_content(True)
         target = layer
     else:
         group = Gimp.GroupLayer.new(img, "G")
         img.insert_layer(group, None, 0)
         img.insert_layer(layer, group, 0)
-        group.set_lock_content(case == 'parent')
         target = group if case == 'group' else layer
-    # Fill under the lock: locks only stop the tools, not this test's setup.
-    lock = layer.get_lock_content()
-    layer.set_lock_content(False)
+    # Fill before locking: a lock, the group's too, makes the fill fail.
     _lk_fill(img, layer)
-    layer.set_lock_content(lock)
+    if case == 'own':
+        layer.set_lock_content(True)
+    elif case == 'parent':
+        group.set_lock_content(True)
     img.set_selected_layers([target])
     img.clean_all()
-    _LK = (img, layer)
 
 def _lk_index():
     print(Gimp.get_images().index(_LK[0]))
