@@ -82,6 +82,10 @@ right command when the versions differ.
   image changed. `edit_text` returns the layer's `layer_name` after the edit: new text
   renames a text layer that still has GIMP's automatic name (its text). Based on #63 by
   @yonggandewo12.
+- `get_pixel_color` outside the layer is an error giving the layer's size and its offsets
+  in the image (`x` and `y` are relative to the layer). It used to fail with "'NoneType'
+  object is not subscriptable". A fractional or boolean `x` or `y` is an error; 1.9 used to
+  read pixel 1. Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

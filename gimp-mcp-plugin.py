@@ -2475,6 +2475,21 @@ class MCPPlugin(Gimp.PlugIn):
         return layer
 
     @staticmethod
+    def _whole(value, name):
+        """Return value as an int; raise unless it is a whole number.
+
+        Takes what _index() takes (whole-number floats, digit strings), and
+        negative numbers too. int() used to truncate 1.9 to 1 and -0.5 to 0.
+        """
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str) and re.fullmatch(r"\s*-?\d+\s*", value):
+            return int(value)
+        raise ValueError(f"{name} must be a whole number, got {value!r}")
+
+    @staticmethod
     def _index(value, name):
         """Return value as a list index; raise unless it is a whole number, 0 or more.
 
@@ -5812,11 +5827,23 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = self._index(params.get("image_index", 0), "image_index")
             layer_name  = params.get("layer_name", None)
-            x           = int(params.get("x", 0))
-            y           = int(params.get("y", 0))
+            x           = self._whole(params.get("x", 0), "x")
+            y           = self._whole(params.get("y", 0), "y")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # get_pixel() returns None outside the layer, which used to fail
+            # with "'NoneType' object is not subscriptable".
+            width, height = drawable.get_width(), drawable.get_height()
+            if not (0 <= x < width and 0 <= y < height):
+                _ok, off_x, off_y = drawable.get_offsets()
+                raise ValueError(
+                    f"({x}, {y}) is outside layer '{drawable.get_name()}' ({width}x{height}): "
+                    f"x and y are relative to the layer, whose top-left corner is at "
+                    f"({off_x}, {off_y}) in the image"
+                )
             pixel    = drawable.get_pixel(x, y)
+            if pixel is None:
+                raise RuntimeError(f"GIMP could not read the pixel at ({x}, {y})")
             # GIMP 3.2: get_pixel returns a Gegl.Color object
             if hasattr(pixel, 'get_rgba'):
                 r, g, b, a = srgb_bytes_from_color(pixel)

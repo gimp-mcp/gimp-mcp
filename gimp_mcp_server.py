@@ -3149,7 +3149,10 @@ def get_pixel_color(
     """Get the color of a single pixel.
 
     Parameters:
-    - x, y: Pixel coordinates
+    - x, y: Pixel coordinates relative to the layer's top-left corner (whole numbers).
+      For a layer that covers the canvas at offset (0, 0), these are image
+      coordinates; otherwise subtract the layer's offsets (list_layers). A point
+      outside the layer is an error that gives the layer's size and offsets.
     - image_index: Target image index (default 0)
     - layer_name: Layer to sample from; defaults to the selected layer, else the top layer
 
