@@ -943,7 +943,10 @@ def batch_export(
     Returns:
     - exported: list of {file_path, name, width, height}
     - count: number of files written
-    - errors: list of any export errors
+    - errors: list of {index, error} for images that failed to export
+    When no image could be exported, the call fails with each image's error instead.
+    A name_pattern with fields other than {name} and {index} is an error, and
+    nothing is exported.
     """
     try:
         params: dict = {

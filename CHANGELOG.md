@@ -93,6 +93,11 @@ right command when the versions differ.
   `border` (2.7 used to grow by 2) and a non-finite one; the selection is left as it was.
   `amount` is optional (default 0), so `sharpen`, which ignores it, no longer needs one.
   Based on #63 by @yonggandewo12.
+- `batch_export` is an error when no image could be exported, giving each image's reason;
+  it used to report success with an empty `exported` list. When some images export, it
+  still succeeds and lists the others in `errors`. A `name_pattern` with fields other than
+  `{name}` and `{index}` is an error before anything is written; it used to fail for each
+  image with only the field's name (`'bogus'`). Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

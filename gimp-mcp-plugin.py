@@ -2864,6 +2864,35 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    @staticmethod
+    def _check_name_pattern(pattern):
+        """Raise unless pattern's fields are only {name} and {index}.
+
+        Checked once, before anything is written: a bad pattern used to fail
+        for every image with a bare "'bogus'" and report success. A trial
+        format() isn't enough: "{name[3]}" and "{name.upper}" pass it but fail
+        or misname some images, so every field name, also inside a format
+        spec ("{index:{name}}"), must be exactly name or index.
+        """
+        from string import Formatter
+        usage = "use {name} and {index}, e.g. '{name}_{index:03d}'"
+
+        def fields(text):
+            for _literal, field, spec, _conversion in Formatter().parse(text):
+                if field is not None:
+                    yield field
+                    if spec:
+                        yield from fields(spec)
+        try:
+            bad = [f for f in fields(pattern) if f not in ("name", "index")]
+            if not bad:
+                pattern.format(name="name", index=0)
+        except (KeyError, IndexError, ValueError, AttributeError, TypeError) as ex:
+            raise ValueError(
+                f"Bad name_pattern {pattern!r} ({type(ex).__name__}: {ex}): {usage}") from None
+        if bad:
+            raise ValueError(f"Bad name_pattern {pattern!r} (unknown field {bad[0]!r}): {usage}")
+
     def _batch_export(self, params):
         """Export all (or one) open images to output_dir."""
         try:
@@ -2873,6 +2902,7 @@ class MCPPlugin(Gimp.PlugIn):
             name_pattern = params.get("name_pattern", "{name}")
             image_index  = params.get("image_index", None)
             self._check_export_args(fmt, quality)
+            self._check_name_pattern(name_pattern)
 
             images = Gimp.get_images()
             if not images:
@@ -2903,6 +2933,11 @@ class MCPPlugin(Gimp.PlugIn):
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
 
+            # Some images exported is a success that lists the others in
+            # errors; none at all is an error (it used to be a success too).
+            if not exported:
+                return {"status": "error", "error": "Nothing was exported: " + "; ".join(
+                    f"image {e['index']}: {e['error']}" for e in errors)}
             return {
                 "status": "success",
                 "results": {"exported": exported, "count": len(exported), "errors": errors}
