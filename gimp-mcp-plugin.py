@@ -1379,12 +1379,12 @@ class MCPPlugin(Gimp.PlugIn):
                         "width": layer.get_width(),
                         "height": layer.get_height(),
                         "has_alpha": layer.has_alpha(),
-                        "is_group": hasattr(layer, 'get_children') and callable(getattr(layer, 'get_children')),
+                        "is_group": bool(layer.is_group_layer()),
                         "layer_type": self._get_layer_type_string(layer)
                     }
                     # Try to get layer mode if available
                     try:
-                        layer_info["blend_mode"] = str(layer.get_mode())
+                        layer_info["blend_mode"] = layer.get_mode().value_nick.upper()
                     except Exception:
                         layer_info["blend_mode"] = "unknown"
                     
@@ -1453,7 +1453,8 @@ class MCPPlugin(Gimp.PlugIn):
             # Get resolution information
             resolution_x = resolution_y = None
             try:
-                resolution_x, resolution_y = image.get_resolution()
+                # get_resolution() returns (ok, x, y) in GIMP 3.
+                _ok, resolution_x, resolution_y = image.get_resolution()
             except Exception as res_error:
                 print(f"Error getting resolution: {res_error}")
             
@@ -1533,21 +1534,23 @@ class MCPPlugin(Gimp.PlugIn):
             return str(precision)
             
     def _get_layer_type_string(self, layer):
-        """Get layer type string with compatibility for different GIMP versions."""
+        """Describe the layer's pixel type.
+
+        GimpLayer has no get_type()/get_image_type() in the 3.2 bindings, and the
+        GObject `type` attribute is a bound method — derive the type from the
+        image base plus whether the layer carries alpha, which is what a caller
+        actually needs to know.
+        """
         try:
-            # Try different methods to get layer type
-            if hasattr(layer, 'get_type'):
-                return str(layer.get_type())
-            elif hasattr(layer, 'get_image_type'):
-                return str(layer.get_image_type())
-            elif hasattr(layer, 'type'):
-                return str(layer.type)
-            else:
-                # Fallback - determine from layer properties
-                if layer.has_alpha():
-                    return "RGBA"
-                else:
-                    return "RGB"
+            base = layer.get_image().get_base_type()
+            alpha = "_A" if layer.has_alpha() else ""
+            if base == Gimp.ImageBaseType.RGB:
+                return f"RGB{alpha}"
+            if base == Gimp.ImageBaseType.GRAY:
+                return f"GRAY{alpha}"
+            if base == Gimp.ImageBaseType.INDEXED:
+                return f"INDEXED{alpha}"
+            return str(base)
         except Exception as e:
             print(f"Warning: Could not determine layer type: {e}")
             return "unknown"
@@ -3053,6 +3056,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _rotate_image(self, params):
         """Rotate image by angle."""
         try:
+            import math
             image_index = int(params.get("image_index", 0))
             angle       = float(params.get("angle", 90))
             image = self._get_image(image_index)
@@ -3063,26 +3067,41 @@ class MCPPlugin(Gimp.PlugIn):
                     180.0: Gimp.RotationType.DEGREES180,
                     270.0: Gimp.RotationType.DEGREES270,
                     -90.0: Gimp.RotationType.DEGREES270,
+                    -180.0: Gimp.RotationType.DEGREES180,
+                    -270.0: Gimp.RotationType.DEGREES90,
                 }
                 if angle in rot_map:
                     self._check_ok(image.rotate(rot_map[angle]), "Rotating the image")
                 else:
-                    import math
-                    rad = math.radians(angle)
-                    proc = self._lookup_pdb("gimp-item-transform-rotate-default")
+                    # gimp-item-transform-rotate takes DEGREES, not radians. Rotate
+                    # every layer about the image centre, then grow the canvas to the
+                    # rotated bounding box so no corner is cropped. Flattening here
+                    # would destroy the layer stack for a geometric edit.
+                    w = image.get_width()
+                    h = image.get_height()
+                    cx, cy = w / 2.0, h / 2.0
+                    cos_a, sin_a = abs(math.cos(math.radians(angle))), abs(math.sin(math.radians(angle)))
+                    new_w = max(1, int(round(w * cos_a + h * sin_a)))
+                    new_h = max(1, int(round(w * sin_a + h * cos_a)))
+                    proc = self._lookup_pdb("gimp-item-transform-rotate")
                     for layer in image.get_layers():
+                        if not layer.has_alpha():
+                            layer.add_alpha()
                         cfg = proc.create_config()
-                        cfg.set_property("item",      layer)
-                        cfg.set_property("angle",     rad)
-                        cfg.set_property("auto-center", True)
-                        cfg.set_property("center-x",  0)
-                        cfg.set_property("center-y",  0)
+                        cfg.set_property("item", layer)
+                        cfg.set_property("angle", angle)
+                        cfg.set_property("auto-center", False)
+                        cfg.set_property("center-x", cx)
+                        cfg.set_property("center-y", cy)
                         self._run_pdb(proc, cfg)
-                    self._check_item(image.flatten(), "Flattening the rotated image")
+                    if (new_w, new_h) != (w, h):
+                        image.resize(new_w, new_h, int((w - new_w) / 2), int((h - new_h) / 2))
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success", "angle": angle}}
+            return {"status": "success",
+                    "results": {"status": "success", "angle": angle,
+                                "width": image.get_width(), "height": image.get_height()}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -3551,7 +3570,7 @@ class MCPPlugin(Gimp.PlugIn):
                         "id":         layer.get_id(),
                         "visible":    layer.get_visible(),
                         "opacity":    layer.get_opacity(),
-                        "blend_mode": str(layer.get_mode()),
+                        "blend_mode": layer.get_mode().value_nick.upper(),
                         "width":      layer.get_width(),
                         "height":     layer.get_height(),
                         "has_alpha":  layer.has_alpha(),
@@ -4204,11 +4223,11 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _warp_region(self, params):
-        """Warp / liquify a region of pixels to deform facial features.
+        """Warp / liquify a region of pixels by smudging them along a vector.
 
-        Uses plug-in-iwarp (interactive warp) to push pixels in a direction.
-        Useful for subtle expressions: turning a neutral mouth into a smile by
-        pushing corners upward, etc.
+        GIMP 3.2 removed plug-in-iwarp and GEGL has no stroke-warp operation;
+        the callable equivalent of a liquify "move" stroke is the smudge tool,
+        driven with a soft round brush of the requested radius.
 
         params:
           image_index  — which image
@@ -4220,84 +4239,49 @@ class MCPPlugin(Gimp.PlugIn):
                          amount: deform strength 0-1 (default 0.3)
         """
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             vectors     = params.get("vectors", [])
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
-            pdb      = Gimp.get_pdb()
+            if not vectors:
+                return {"status": "error", "error": "warp_region: no vectors given"}
+            for i, v in enumerate(vectors):
+                missing = [k for k in ("x", "y", "dx", "dy") if k not in v]
+                if missing:
+                    return {"status": "error",
+                            "error": f"warp_region: vector {i} is missing {missing}"}
 
+            applied = []
             image.undo_group_start()
+            Gimp.context_push()
             try:
+                Gimp.context_set_brush_hardness(0.5)
+                Gimp.context_set_opacity(100.0)
                 for v in vectors:
-                    x      = float(v.get("x", 0))
-                    y      = float(v.get("y", 0))
-                    dx     = float(v.get("dx", 0))
-                    dy     = float(v.get("dy", 0))
+                    x      = float(v["x"])
+                    y      = float(v["y"])
+                    dx     = float(v["dx"])
+                    dy     = float(v["dy"])
                     radius = float(v.get("radius", 40))
                     amount = float(v.get("amount", 0.3))
-
-                    # Try GEGL warp operation first (GIMP 3 native approach)
-                    try:
-                        Gegl.init(None)
-                        buf        = drawable.get_buffer()
-                        shadow_buf = drawable.get_shadow_buffer()
-                        graph      = Gegl.Node()
-
-                        src = graph.create_child("gegl:buffer-source")
-                        src.set_property("buffer", buf)
-
-                        warp = graph.create_child("gegl:warp")
-                        warp.set_property("behavior",    0)        # 0 = move
-                        warp.set_property("strength",    amount)
-                        warp.set_property("size",        radius)
-                        warp.set_property("hardness",    0.5)
-                        # stamp one warp stroke at (x,y) → (x+dx, y+dy)
-                        # GEGL warp builds strokes via the "stroke" property
-                        stroke = [(x, y), (x + dx, y + dy)]
-                        warp.set_property("stroke", stroke)
-
-                        out = graph.create_child("gegl:write-buffer")
-                        out.set_property("buffer", shadow_buf)
-
-                        src.link(warp)
-                        warp.link(out)
-                        out.process()
-
-                        shadow_buf.flush()
-                        drawable.merge_shadow(True)
-                        drawable.update(
-                            max(0, int(x - radius - abs(dx))),
-                            max(0, int(y - radius - abs(dy))),
-                            int(radius * 2 + abs(dx) * 2 + 4),
-                            int(radius * 2 + abs(dy) * 2 + 4),
-                        )
-                    except Exception as gegl_err:
-                        # Fallback: plug-in-iwarp if GEGL warp fails. If that is
-                        # missing or fails too, report it instead of a success.
-                        proc = pdb.lookup_procedure("plug-in-iwarp")
-                        if proc is None:
-                            raise RuntimeError(
-                                f"GEGL warp failed ({gegl_err}) and plug-in-iwarp is not available"
-                            ) from gegl_err
-                        cfg = proc.create_config()
-                        cfg.set_property("run-mode",      Gimp.RunMode.NONINTERACTIVE)
-                        cfg.set_property("image",         image)
-                        cfg.set_property("drawable",      drawable)
-                        cfg.set_property("cursor-x",      int(x))
-                        cfg.set_property("cursor-y",      int(y))
-                        cfg.set_property("pressure",      amount)
-                        cfg.set_property("move-max-dist", int(radius))
-                        cfg.set_property("deform-type",   0)  # 0 = MOVE
-                        cfg.set_property("x",             int(x + dx))
-                        cfg.set_property("y",             int(y + dy))
-                        self._run_pdb(proc, cfg)
+                    if dx == 0.0 and dy == 0.0:
+                        continue
+                    Gimp.context_set_brush_size(max(1.0, radius * 2.0))
+                    Gimp.smudge(drawable, min(1.0, max(0.0, amount)),
+                                [x, y, x + dx, y + dy])
+                    applied.append({"from": [x, y], "to": [x + dx, y + dy],
+                                    "radius": radius, "amount": amount})
             finally:
+                Gimp.context_pop()
                 image.undo_group_end()
 
+            if not applied:
+                return {"status": "error",
+                        "error": "warp_region: every vector had a zero displacement"}
             Gimp.displays_flush()
-            return {"status": "success", "results": {"warped_vectors": len(vectors)}}
+            return {"status": "success",
+                    "results": {"warped_vectors": len(applied), "vectors": applied}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 

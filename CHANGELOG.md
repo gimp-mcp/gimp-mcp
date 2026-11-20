@@ -54,6 +54,20 @@ right command when the versions differ.
   or `image_<index>` for an image that was never saved. All exports used to go to
   `image.jpg` / `image.png`. An export that would overwrite the source file, also through a
   symlinked folder, gets a `_web` suffix. Based on #62 by @gr8monk3ys.
+- `get_image_metadata` reports real values where GIMP 3.2 used to defeat the lookups:
+  `is_group` is now the layer's actual group state (it tested for a `get_children`
+  attribute, so it was always true), `layer_type` and the layer `blend_mode` are the
+  layer's type and mode instead of a bound-method repr, and `resolution_x` / `resolution_y`
+  are the image resolution instead of always null (GIMP 3 returns a three-value tuple).
+  `list_layers` `blend_mode` is fixed the same way. Based on #63 by @yonggandewo12.
+- `rotate_image` rotates by any angle (e.g. 30) instead of failing. GIMP 3.2 dropped the
+  `gimp-item-transform-rotate-default` procedure it called and it flattened the image; now
+  each layer rotates about the image centre and the canvas grows to the rotated bounding
+  box, and the result reports the new width and height. Based on #63 by @yonggandewo12.
+- `warp_region` deforms pixels again instead of reporting success over a no-op. It called
+  `plug-in-iwarp`, removed in GIMP 3.2, and a GEGL graph that had no strokes; now it smudges
+  each vector with a soft brush, and an empty `vectors` list or one missing `x`/`y`/`dx`/`dy`
+  is an error. Based on #63 by @yonggandewo12.
 
 ### Changed
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
