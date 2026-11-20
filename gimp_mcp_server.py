@@ -1726,17 +1726,21 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
 def modify_selection(
     ctx: Context,
     operation: str,
-    amount: float,
+    amount: float = 0,
     image_index: int = 0
 ) -> dict:
     """Grow, shrink, feather, border, or sharpen the current selection.
 
     Parameters:
     - operation: "grow", "shrink", "feather", "border", "sharpen"
-    - amount: Pixel radius for grow/shrink/feather/border; ignored for sharpen
+    - amount: Pixel radius, 0 or more (default 0): a whole number for
+      grow/shrink/border, any number for feather; ignored for sharpen
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns {status, has_selection}, plus x, y, width, height (the selection's
+    bounds) when something is still selected. A shrink or border can leave
+    nothing selected, and on an empty selection the operations do nothing;
+    has_selection is then false.
     """
     try:
         conn = get_gimp_connection()

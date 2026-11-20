@@ -86,6 +86,13 @@ right command when the versions differ.
   in the image (`x` and `y` are relative to the layer). It used to fail with "'NoneType'
   object is not subscriptable". A fractional or boolean `x` or `y` is an error; 1.9 used to
   read pixel 1. Based on #63 by @yonggandewo12.
+- `modify_selection` returns `has_selection` and, while something is selected, its bounds
+  (`x`, `y`, `width`, `height`): a shrink or border can leave nothing selected, which it
+  used to report as a plain success. A negative `amount`, which GIMP ignored while the
+  tool reported success, is an error, as is a fractional one for `grow`, `shrink` and
+  `border` (2.7 used to grow by 2) and a non-finite one; the selection is left as it was.
+  `amount` is optional (default 0), so `sharpen`, which ignores it, no longer needs one.
+  Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

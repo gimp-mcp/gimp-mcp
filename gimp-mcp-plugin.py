@@ -3808,29 +3808,52 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    # GIMP's limit for the grow/shrink/border steps and the feather radius.
+    MODIFY_SELECTION_MAX = 2147483647
+
     def _modify_selection(self, params):
         """Grow/shrink/feather/border/sharpen selection."""
         try:
             image_index = self._index(params.get("image_index", 0), "image_index")
-            operation   = params.get("operation", "grow").lower()
-            amount      = float(params.get("amount", 0))
-            image = self._get_image(image_index)
-            OP_MAP = {
+            operation   = self._option("operation", params.get("operation", "grow"), {
                 "grow":    Gimp.Selection.grow,
                 "shrink":  Gimp.Selection.shrink,
                 "feather": Gimp.Selection.feather,
                 "border":  Gimp.Selection.border,
                 "sharpen": Gimp.Selection.sharpen,
-            }
-            fn = OP_MAP.get(operation)
-            if fn is None:
-                return {"status": "error", "error": f"Unknown selection operation: {operation}"}
-            if operation == "sharpen":
-                fn(image)
+            })
+            image = self._get_image(image_index)
+            if operation is Gimp.Selection.sharpen:
+                ok = operation(image)
             else:
-                fn(image, amount)
+                # Checked before anything changes: GIMP refused a negative amount
+                # without an error (the tool reported success), and the int()
+                # behind grow/shrink/border truncated 2.7 to 2.
+                raw = params.get("amount", 0)
+                if operation is Gimp.Selection.feather:
+                    # The feather radius may be fractional; NaN and infinity are
+                    # refused here (NaN crashed GIMP in another tool).
+                    try:
+                        amount = None if isinstance(raw, bool) else float(raw)
+                    except (TypeError, ValueError):
+                        amount = None
+                    if amount is None or not math.isfinite(amount):
+                        raise ValueError(f"amount must be a number, got {raw!r}")
+                else:
+                    amount = self._whole(raw, "amount")
+                if not 0 <= amount <= self.MODIFY_SELECTION_MAX:
+                    raise ValueError(
+                        f"amount must be between 0 and {self.MODIFY_SELECTION_MAX}, got {raw!r}")
+                ok = operation(image, amount)
+            self._check_ok(ok, f"modify_selection {params.get('operation', 'grow')!r}")
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            # A shrink or a border can leave nothing selected (as can any
+            # operation on an empty selection); that is reported, not an error.
+            _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
+            results = {"status": "success", "has_selection": bool(non_empty)}
+            if non_empty:
+                results.update(x=x1, y=y1, width=x2 - x1, height=y2 - y1)
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
