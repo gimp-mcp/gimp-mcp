@@ -5961,6 +5961,9 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = (image.get_selected_layers() or image.get_layers() or [None])[0]
             channel  = self._option("channel", channel_str, CHANNEL_MAP)
+            if drawable is not None:
+                # GIMP gives only "did not succeed" for a channel the layer lacks.
+                self._check_channel(drawable, channel_str.strip().lower(), channel)
             pdb = Gimp.get_pdb()
             proc = pdb.lookup_procedure("gimp-drawable-histogram")
             if proc:
@@ -5980,12 +5983,19 @@ class MCPPlugin(Gimp.PlugIn):
                         return result.index(idx)
                     except Exception:
                         return 0
+                # GIMP gives mean, std-dev and median on a 0-255 scale for 8-bit
+                # images and on 0-1 for every other precision (live: a white
+                # layer's mean is 255 at u8, 1.0 at u16 and float). Report
+                # 0-255 whatever the precision.
+                scale = 1.0 if image.get_precision() in (
+                    Gimp.Precision.U8_LINEAR, Gimp.Precision.U8_NON_LINEAR,
+                    Gimp.Precision.U8_PERCEPTUAL) else 255.0
                 return {
                     "status": "success",
                     "results": {
-                        "mean":    _safe(1),
-                        "std_dev": _safe(2),
-                        "median":  _safe(3),
+                        "mean":    _safe(1) * scale,
+                        "std_dev": _safe(2) * scale,
+                        "median":  _safe(3) * scale,
                         "pixels":  _safe(4),
                         "count":   _safe(5),
                     }

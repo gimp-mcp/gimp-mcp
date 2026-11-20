@@ -6,7 +6,13 @@ Checks, on a layer that is pure blue on the left and white on the right, that:
 - channel="luminance" works and gives a lower mean than "value" (which is
   the brightest of red, green and blue: 255 for pure blue);
 - mean, median and std_dev are on a 0-255 scale;
-- with a selection, only the selected pixels count.
+- with a selection, only the selected pixels count;
+- the 0-255 scale holds at every precision: GIMP itself gives 0-1 for
+  anything but 8-bit, so a white 16-bit layer's mean was 1.0;
+- a channel the layer doesn't have (alpha without an alpha channel; red,
+  green, blue or luminance on a grayscale layer) is an error saying so; it
+  failed with just "gimp-drawable-histogram did not succeed". The channels
+  the layer has still work, also on an indexed layer.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
 overrides the port). Exits 0 on pass, 1 on fail.
@@ -54,8 +60,8 @@ def check(cond, msg, detail=None):
         fail(f"{msg}: {detail}" if detail is not None else msg)
 
 
-def histogram(channel):
-    index = int(py("print([i.get_id() for i in Gimp.get_images()].index(_HG.get_id()))"))
+def histogram(channel, var='_HG'):
+    index = int(py(f"print([i.get_id() for i in Gimp.get_images()].index({var}.get_id()))"))
     r = send({'type': 'get_histogram', 'params': {'channel': channel, 'image_index': index}})
     check(r.get('status') == 'success', f"get_histogram channel={channel} failed", r)
     return r['results']
@@ -104,6 +110,54 @@ def main():
         check(luminance['pixels'] == 200 and luminance['mean'] > blue,
               "the white half doesn't raise the luminance", (blue, luminance))
         print("PASS: without a selection the whole layer counts")
+
+        for precision in ('U8_LINEAR', 'U8_PERCEPTUAL', 'U16_NON_LINEAR', 'HALF_LINEAR',
+                          'FLOAT_NON_LINEAR', 'DOUBLE_PERCEPTUAL'):
+            py(f"_HP = Gimp.Image.new_with_precision(10, 10, Gimp.ImageBaseType.RGB,"
+               f" Gimp.Precision.{precision})")
+            try:
+                py("_p = Gimp.Layer.new(_HP, 'w', 10, 10, Gimp.ImageType.RGB_IMAGE, 100,"
+                   " Gimp.LayerMode.NORMAL)",
+                   "_HP.insert_layer(_p, None, 0)",
+                   "_p.fill(Gimp.FillType.WHITE)")
+                value = histogram('value', '_HP')
+                check(abs(value['mean'] - 255) < 0.5 and abs(value['median'] - 255) < 1.5,
+                      f"a white layer's mean at {precision} isn't 255", value)
+            finally:
+                py("_HP.delete() if _HP.is_valid() else None")
+        print("PASS: the values are on a 0-255 scale at every precision")
+
+        for base, alpha, channel, words in (
+                ('RGB', False, 'alpha', 'no alpha channel'),
+                ('GRAY', False, 'red', "grayscale and has no 'red'"),
+                ('GRAY', True, 'green', "grayscale and has no 'green'"),
+                ('GRAY', False, 'luminance', "grayscale and has no 'luminance'"),
+                ('GRAY', True, 'alpha', None), ('GRAY', False, 'value', None),
+                ('INDEXED', False, 'luminance', None), ('INDEXED', True, 'alpha', None)):
+            gimp_base = 'GRAY' if base == 'GRAY' else 'RGB'
+            py(f"_HC = Gimp.Image.new(10, 10, Gimp.ImageBaseType.{gimp_base})")
+            try:
+                py(f"_c = Gimp.Layer.new(_HC, 'c', 10, 10, Gimp.ImageType.{gimp_base}"
+                   f"{'A' if alpha else ''}_IMAGE, 100, Gimp.LayerMode.NORMAL)",
+                   "_HC.insert_layer(_c, None, 0)",
+                   "_c.fill(Gimp.FillType.WHITE)",
+                   "_HC.convert_indexed(Gimp.ConvertDitherType.NONE, "
+                   "Gimp.ConvertPaletteType.GENERATE, 16, False, False, '')"
+                   if base == 'INDEXED' else "pass")
+                what = f"channel {channel!r} on a {base}{'A' if alpha else ''} layer"
+                if words is None:
+                    result = histogram(channel, '_HC')
+                    check(result['pixels'] == 100, f"{what} counted the wrong pixels", result)
+                    continue
+                index = int(py("print([i.get_id() for i in Gimp.get_images()]"
+                               ".index(_HC.get_id()))"))
+                r = send({'type': 'get_histogram',
+                          'params': {'channel': channel, 'image_index': index}})
+                check(r.get('status') == 'error' and words in r.get('error', ''),
+                      f"{what} did not fail with {words!r}", r)
+            finally:
+                py("_HC.delete() if _HC.is_valid() else None")
+        print("PASS: a channel the layer doesn't have is an error saying so; the others work")
         return 0
     finally:
         if made:

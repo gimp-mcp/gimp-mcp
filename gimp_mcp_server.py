@@ -3194,7 +3194,9 @@ def get_histogram(
 
     Parameters:
     - channel: "value" (the brightest of red, green and blue; default), "luminance"
-      (perceived brightness), "red", "green", "blue", "alpha"
+      (perceived brightness), "red", "green", "blue", "alpha". A grayscale layer has
+      only "value" and, with an alpha channel, "alpha"; "alpha" needs a layer with an
+      alpha channel.
     - image_index: Target image index (default 0)
 
     Returns: {mean, median, std_dev, pixels, count}

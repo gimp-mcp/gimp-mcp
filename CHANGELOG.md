@@ -102,8 +102,15 @@ right command when the versions differ.
   promises; it used to fill only the part inside the canvas.
 - `fill_layer` leaves the selection as it was; it used to clear it. It still fills the
   whole layer. `get_histogram`'s description no longer lists `min` and `max`, which it
-  never returned, and says that the values are on a 0-255 scale and that only the
-  selected pixels count when there is a selection. Based on #63 by @yonggandewo12.
+  never returned, and says that only the selected pixels count when there is a selection.
+  Based on #63 by @yonggandewo12.
+- `get_histogram` gives `mean`, `median` and `std_dev` on a 0-255 scale at every
+  precision. For 16-bit, 32-bit and floating-point images they used to be on a 0-1 scale
+  (GIMP's own), so a white layer's mean was 1 instead of 255. Based on #63 by
+  @yonggandewo12.
+- `get_histogram` with a `channel` the layer doesn't have (`alpha` without an alpha
+  channel, `red`, `green`, `blue` or `luminance` on a grayscale layer) is an error saying
+  so. It used to fail with just "gimp-drawable-histogram did not succeed".
 - `save_xcf`, `close_image` with `save_first`, and `get_image_bitmap`'s last-resort export
   run GIMP's save procedures non-interactively. Those procedures default to interactive, so
   the bitmap fallback (used only when the PNG export fails) could open GIMP's export
@@ -191,6 +198,12 @@ right command when the versions differ.
   @yonggandewo12.
 
 ### Changed
+- Some results have a new format, so clients that read them may need updating (details
+  under Fixed): `list_layers` reports `offsets` as `[x, y]` (was `[true, x, y]`);
+  `list_layers` and `get_image_metadata` report `blend_mode` by name (was GIMP's number);
+  `get_histogram`'s `mean`, `median` and `std_dev` are 0-255 at every precision (were 0-1
+  above 8 bit); `call_api` with `"pyGObject-eval"` returns the expressions' values (was
+  empty strings).
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
   using Normal, and accept names like `hard light` and `hard-light` (#149).
   An empty `blend_mode` leaves the mode unchanged in `set_layer_properties`.
