@@ -362,8 +362,9 @@ metadata = get_image_metadata()
         "width": 1920,
         "height": 1080,
         "has_alpha": false,
-        "blend_mode": "NORMAL",
-        "layer_type": "RGB_IMAGE"
+        "is_group": false,
+        "layer_type": "RGB",
+        "blend_mode": "NORMAL"
       }
     ],
     "channels": [],
@@ -381,6 +382,12 @@ metadata = get_image_metadata()
   }
 }
 ```
+
+`layer_type` is the layer's pixel format: `RGB`, `RGBA`, `GRAY`, `GRAYA`, `INDEXED` or
+`INDEXEDA`. `RGB` and `RGBA` differ only in the alpha channel, so `RGB` there means "RGB
+without alpha"; `basic.base_type` is the image's color mode (`RGB`, `Grayscale` or `Indexed`)
+and says nothing about alpha. `blend_mode` uses the names `create_layer` and
+`set_layer_properties` take.
 
 #### Using `get_gimp_info()`
 ```python
