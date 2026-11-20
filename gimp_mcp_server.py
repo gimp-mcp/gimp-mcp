@@ -3193,7 +3193,8 @@ def get_histogram(
     """Get histogram statistics for a channel of the selected layer (else the top layer).
 
     Parameters:
-    - channel: "value" (all; default), "red", "green", "blue", "alpha"
+    - channel: "value" (the brightest of red, green and blue; default), "luminance"
+      (perceived brightness), "red", "green", "blue", "alpha"
     - image_index: Target image index (default 0)
 
     Returns: {mean, median, std_dev, pixels, count}

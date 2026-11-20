@@ -618,6 +618,13 @@ def main():
           None if r["status"] == "success" and ("file_overwrite", "/tmp/x.xcf") in CALLS
           else f"got {r}, calls {CALLS}")
 
+    scenario({"gimp-xcf-save": (SUCCESS, None)})
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf runs gimp-xcf-save non-interactively (its run-mode defaults to interactive)",
+          None if r["status"] == "success"
+          and CONFIG.get("run-mode") == mod.Gimp.RunMode.NONINTERACTIVE
+          else f"got {r}, config {CONFIG}")
+
     scenario({"gimp-xcf-save": (EXECUTION_ERROR, "Permission denied")})
     r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
     check("save_xcf reports an error when gimp-xcf-save fails",
@@ -863,6 +870,16 @@ def main():
               None if r["status"] == "success" and len(TEMP_IMAGES) == 1
               else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
     del OPEN_IMAGE.get_layers
+
+    # When file-png-export fails (and Gimp.file_save, missing here), the last
+    # fallback, gimp-file-save, must not run interactively: that is its
+    # default, and it could open the export dialog and wait for it.
+    scenario({"file-png-export": (EXECUTION_ERROR, "boom"), "gimp-file-save": (SUCCESS, None)})
+    r = plugin._get_current_image_bitmap({})
+    check("bitmap preview's gimp-file-save fallback runs non-interactively",
+          None if ("run", "gimp-file-save") in CALLS
+          and CONFIG.get("run-mode") == mod.Gimp.RunMode.NONINTERACTIVE
+          else f"got {r.get('error', r['status'])}, calls {CALLS}, config {CONFIG}")
 
     # image_index picks which open image is rendered, full or region.
     second = FakeImage()

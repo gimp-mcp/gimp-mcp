@@ -104,6 +104,12 @@ right command when the versions differ.
   whole layer. `get_histogram`'s description no longer lists `min` and `max`, which it
   never returned, and says that the values are on a 0-255 scale and that only the
   selected pixels count when there is a selection. Based on #63 by @yonggandewo12.
+- `save_xcf`, `close_image` with `save_first`, and `get_image_bitmap`'s last-resort export
+  run GIMP's save procedures non-interactively. Those procedures default to interactive, so
+  the bitmap fallback (used only when the PNG export fails) could open GIMP's export
+  dialog and wait for it. Based on #63 by @yonggandewo12.
+- `get_histogram` takes `channel="luminance"` (perceived brightness), which GIMP 3.2 has;
+  `value` is the brightest of red, green and blue. Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

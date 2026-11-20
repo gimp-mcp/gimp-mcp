@@ -1490,6 +1490,9 @@ class MCPPlugin(Gimp.PlugIn):
                             save_proc = pdb.lookup_procedure('gimp-file-save')
                             if save_proc:
                                 save_config = save_proc.create_config()
+                                # gimp-file-save defaults to interactive, which
+                                # could open the export dialog and wait for it.
+                                save_config.set_property('run-mode', Gimp.RunMode.NONINTERACTIVE)
                                 save_config.set_property('image', final_image)
                                 save_config.set_property('file', file_obj)
                                 save_result = self._run_pdb(save_proc, save_config)
@@ -2831,6 +2834,8 @@ class MCPPlugin(Gimp.PlugIn):
             proc = pdb.lookup_procedure("gimp-xcf-save")
             if proc:
                 cfg = proc.create_config()
+                # Its run-mode defaults to interactive, like gimp-file-save's.
+                cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
                 cfg.set_property("image", image)
                 cfg.set_property("file", gio_file)
                 self._run_pdb(proc, cfg)
@@ -5849,6 +5854,7 @@ class MCPPlugin(Gimp.PlugIn):
                 gio_file = Gio.File.new_for_path(xcf_path)
                 proc = self._lookup_pdb("gimp-xcf-save")
                 cfg = proc.create_config()
+                cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
                 cfg.set_property("image", image)
                 cfg.set_property("file", gio_file)
                 self._run_pdb(proc, cfg)
@@ -5948,6 +5954,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "green": Gimp.HistogramChannel.GREEN,
                 "blue":  Gimp.HistogramChannel.BLUE,
                 "alpha": Gimp.HistogramChannel.ALPHA,
+                "luminance": Gimp.HistogramChannel.LUMINANCE,
             }
             image_index = self._index(params.get("image_index", 0), "image_index")
             channel_str = params.get("channel", "value")
