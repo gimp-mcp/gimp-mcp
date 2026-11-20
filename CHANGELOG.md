@@ -129,6 +129,10 @@ right command when the versions differ.
 - `select_by_color` always compares whole colors. A sample criterion that `call_api` code
   had left set (such as `Gimp.SelectCriterion.RGB_RED`) made it compare one channel only,
   so selecting red also selected white.
+- `sharpen` with a `threshold` outside 0-255 is an error before anything changes. It
+  failed only after the image was marked as changed, quoting the threshold on GEGL's 0-1
+  scale (300 as 1.176...). Clients writing to the plugin's socket directly also get an
+  error for a fraction such as 1.9, or `true`, which became 1.
 - `select_by_color` returns an error when no pixel of the layer matches the color, and
   leaves the selection as it was. It used to report success, and with `replace` the
   selection was silently gone. It now returns `has_selection` and the selection's `x`, `y`,

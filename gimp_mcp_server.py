@@ -1162,7 +1162,8 @@ def sharpen(
     Parameters:
     - amount: Sharpening strength 0-500 (default 50.0)
     - radius: Blur radius for the mask in pixels (default 3.0)
-    - threshold: Minimum difference before sharpening is applied (default 0)
+    - threshold: Minimum difference before sharpening is applied, a whole number 0-255
+      (default 0)
     - image_index: Target image index (default 0)
     - layer_name: Layer to sharpen; defaults to the selected layer, else the top layer
 

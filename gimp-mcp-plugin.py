@@ -3257,7 +3257,13 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name  = params.get("layer_name", None)
             amount      = float(params.get("amount", 50.0))
             radius      = float(params.get("radius", 3.0))
-            threshold   = int(params.get("threshold", 0))
+            raw_threshold = params.get("threshold", 0)
+            # Checked before the undo group: the GEGL range check failed inside
+            # it (image marked as changed, threshold quoted on GEGL's 0-1
+            # scale), and int() truncated 1.9 to 1.
+            threshold   = self._whole(raw_threshold, "threshold")
+            if not 0 <= threshold <= 255:
+                raise ValueError(f"threshold must be between 0 and 255, got {raw_threshold!r}")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             self._check_writable(drawable)
