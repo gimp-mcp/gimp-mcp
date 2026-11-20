@@ -1596,7 +1596,7 @@ class MCPPlugin(Gimp.PlugIn):
                     }
                     # Try to get layer mode if available
                     try:
-                        layer_info["blend_mode"] = str(layer.get_mode())
+                        layer_info["blend_mode"] = self._blend_mode_to_string(layer.get_mode())
                     except Exception:
                         layer_info["blend_mode"] = "unknown"
                     
@@ -3823,9 +3823,9 @@ class MCPPlugin(Gimp.PlugIn):
     # CATEGORY 5 — Layer Operations
     # =========================================================================
 
-    def _blend_mode_from_string(self, mode_str):
-        """Map blend mode name string to Gimp.LayerMode."""
-        MODE_MAP = {
+    def _blend_modes(self):
+        """Blend mode names the tools take, mapped to Gimp.LayerMode."""
+        return {
             "NORMAL":      Gimp.LayerMode.NORMAL,
             "MULTIPLY":    Gimp.LayerMode.MULTIPLY,
             "SCREEN":      Gimp.LayerMode.SCREEN,
@@ -3843,12 +3843,28 @@ class MCPPlugin(Gimp.PlugIn):
             "LUMINOSITY":  Gimp.LayerMode.HSV_VALUE,
             "DISSOLVE":    Gimp.LayerMode.DISSOLVE,
         }
+
+    def _blend_mode_from_string(self, mode_str):
+        """Map blend mode name string to Gimp.LayerMode."""
+        MODE_MAP = self._blend_modes()
         name = "_".join(mode_str.upper().replace("-", " ").split())
         if name not in MODE_MAP:
             raise ValueError(
                 f"Unknown blend_mode {mode_str!r}. Supported modes: {', '.join(MODE_MAP)}"
             )
         return MODE_MAP[name]
+
+    def _blend_mode_to_string(self, mode):
+        """Name of a Gimp.LayerMode, as create_layer/set_layer_properties take it.
+
+        A mode they don't take (ADDITION, a legacy mode, ...) is named after GIMP's
+        own nick: "addition" -> "ADDITION", "normal-legacy" -> "NORMAL_LEGACY".
+        """
+        for name, value in self._blend_modes().items():
+            if value == mode:
+                return name
+        nick = getattr(mode, "value_nick", None)
+        return nick.upper().replace("-", "_") if nick else str(mode)
 
     def _create_layer(self, params):
         """Create and insert a new layer."""
@@ -4077,17 +4093,18 @@ class MCPPlugin(Gimp.PlugIn):
             layer_list = []
             for i, layer in enumerate(layers):
                 try:
+                    _ok, off_x, off_y = layer.get_offsets()
                     layer_list.append({
                         "index":      i,
                         "name":       layer.get_name(),
                         "id":         layer.get_id(),
                         "visible":    layer.get_visible(),
                         "opacity":    layer.get_opacity(),
-                        "blend_mode": str(layer.get_mode()),
+                        "blend_mode": self._blend_mode_to_string(layer.get_mode()),
                         "width":      layer.get_width(),
                         "height":     layer.get_height(),
                         "has_alpha":  layer.has_alpha(),
-                        "offsets":    list(layer.get_offsets()),
+                        "offsets":    [off_x, off_y],
                     })
                 except Exception as ex:
                     layer_list.append({"index": i, "error": str(ex)})

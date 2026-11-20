@@ -2042,7 +2042,10 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
     Parameters:
     - image_index: Target image index (default 0)
 
-    Returns: {layers: [{name, id, visible, opacity, blend_mode, width, height, has_alpha}], count}
+    Returns: {layers: [{index, name, id, visible, opacity, blend_mode, width, height,
+    has_alpha, offsets: [x, y]}], count}. blend_mode is a name create_layer and
+    set_layer_properties take (NORMAL, MULTIPLY, ...); a mode they don't take is
+    named after GIMP's (ADDITION, NORMAL_LEGACY, ...).
     """
     try:
         conn = get_gimp_connection()

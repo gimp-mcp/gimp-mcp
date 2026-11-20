@@ -72,6 +72,11 @@ right command when the versions differ.
   `GRAY`, ...), the image's `resolution_x`/`resolution_y`, and a channel's `color` as hex.
   `is_group` used to be true for every layer, `layer_type` and channel colors were Python
   object descriptions, and the resolution was null. Based on #63 by @yonggandewo12.
+- `list_layers` and `get_image_metadata` report `blend_mode` by name (`NORMAL`,
+  `HARD_LIGHT`, ...), as `create_layer` and `set_layer_properties` take it, instead of
+  GIMP's number (`"28"`). A mode those tools don't take is named after GIMP
+  (`ADDITION`, `NORMAL_LEGACY`). `list_layers` reports `offsets` as `[x, y]`; it used to
+  be `[true, x, y]`. Based on #63 by @yonggandewo12.
 - `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
   the image unchanged. It used to report success, change nothing and mark the image as
   changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs

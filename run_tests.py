@@ -441,7 +441,7 @@ def gimp_exec(*lines):
 
 def shadow_alpha(shadow, x, y):
     """Alpha of the Drop Shadow layer at image coordinates (x, y)."""
-    _, ox, oy = shadow['offsets']
+    ox, oy = shadow['offsets']
     return cmd('get_pixel_color', {'image_index': 0, 'layer_name': 'Drop Shadow',
                                    'x': x - ox, 'y': y - oy}).get('results', {}).get('alpha')
 
