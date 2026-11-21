@@ -64,6 +64,13 @@ class FakeLayer:
     def is_group(self):
         return False
 
+    # Unlocked, at the top level: the tools may change its pixels.
+    def get_lock_content(self):
+        return False
+
+    def get_parent(self):
+        return None
+
     def set_offsets(self, *a):
         CALLS.append(("layer", "set_offsets", a))
         return True
@@ -121,7 +128,7 @@ class FakePDB:
         return FakeProc(name, status, message)
 
 
-class FakeDrawable:
+class FakeDrawable(FakeLayer):
     """Drawable whose curves_spline() returns a preset result, as libgimp does."""
 
     def __init__(self, curves_result):
@@ -130,6 +137,13 @@ class FakeDrawable:
     def curves_spline(self, channel, points):
         CALLS.append(("curves_spline", self.curves_result))
         return self.curves_result
+
+    # An RGB layer: curves may change any of its color channels.
+    def is_gray(self):
+        return False
+
+    def is_indexed(self):
+        return False
 
 
 PRECISIONS = []  # precisions passed to Gimp.Image.new_with_precision
@@ -208,7 +222,7 @@ class FakeImage:
         pass
 
     def get_selected_layers(self):
-        return ["layer"]
+        return [FakeLayer()]
 
     def get_layers(self):
         return [FakeLayer()]
@@ -287,6 +301,11 @@ def install_gi_stub():
                 # Non-empty selection so _fill_selection proceeds to edit_fill.
                 return (True, True, 0, 0, 1, 1)
 
+            @staticmethod
+            def is_empty(image):
+                # fill_layer: no selection to keep, so it clears its own.
+                return True
+
         class Drawable:
             @staticmethod
             def edit_fill(drawable, fill_type):
@@ -312,6 +331,14 @@ def install_gi_stub():
 
         @staticmethod
         def context_set_line_width(width):
+            pass
+
+        @staticmethod
+        def context_push():
+            pass
+
+        @staticmethod
+        def context_set_interpolation(interpolation):
             pass
 
         @staticmethod
@@ -554,7 +581,8 @@ def main():
                                    get_width=lambda: 10,
                                    get_height=lambda: 10,
                                    is_valid=lambda: True)
-    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(copy=lambda: shadow)
+    plugin._resolve_layer = lambda image, name, index: types.SimpleNamespace(
+        copy=lambda: shadow, is_group=lambda: False)
     scenario({})
     r = plugin._apply_drop_shadow({"blur_radius": 7.5})
     check("apply_drop_shadow falls back to the GEGL filter when plug-in-gauss is missing",
@@ -598,6 +626,13 @@ def main():
           None if r["status"] == "success" and ("file_overwrite", "/tmp/x.xcf") in CALLS
           else f"got {r}, calls {CALLS}")
 
+    scenario({"gimp-xcf-save": (SUCCESS, None)})
+    r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
+    check("save_xcf runs gimp-xcf-save non-interactively (its run-mode defaults to interactive)",
+          None if r["status"] == "success"
+          and CONFIG.get("run-mode") == mod.Gimp.RunMode.NONINTERACTIVE
+          else f"got {r}, config {CONFIG}")
+
     scenario({"gimp-xcf-save": (EXECUTION_ERROR, "Permission denied")})
     r = plugin._save_xcf({"file_path": "/tmp/x.xcf"})
     check("save_xcf reports an error when gimp-xcf-save fails",
@@ -613,13 +648,19 @@ def main():
     # Direct libgimp calls that return False must not report success (#115).
     FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
     for handler, params in (("_fill_rectangle", {"width": 10, "height": 10}),
-                            ("_fill_ellipse", {"width": 10, "height": 10}),
-                            ("_fill_layer", {})):
+                            ("_fill_ellipse", {"width": 10, "height": 10})):
         scenario({})
         r = getattr(plugin, handler)(params)
         check(f"{handler[1:]} reports an error and clears its selection when the fill fails",
               None if r["status"] == "error" and "contents are locked" in r["error"]
               and CALLS[-1] == ("select", "none") else f"got {r}, calls {CALLS}")
+    # fill_layer fills with no selection (the whole layer, also outside the
+    # canvas), so with none to begin with it never touches the selection.
+    scenario({})
+    r = plugin._fill_layer({})
+    check("fill_layer reports an error when the fill fails, and leaves no selection",
+          None if r["status"] == "error" and "contents are locked" in r["error"]
+          and not any(c[0] == "select" for c in CALLS) else f"got {r}, calls {CALLS}")
 
     for handler, params in (("_fill_selection", {}),
                             ("_draw_line", {"x2": 10, "y2": 10}),
@@ -769,7 +810,7 @@ def main():
             ({"image_index": -1}, "image_index must be a non-negative integer"),
             ({"image_index": 0.5}, "image_index must be a non-negative integer"),
             ({"image_index": True}, "image_index must be a non-negative integer"),
-            ({"image_index": "0"}, "image_index must be a non-negative integer"),
+            ({"image_index": "-1"}, "image_index must be a non-negative integer"),
             ({"image_index": 3}, "out of range"),
             ({"max_width": 0, "max_height": 10}, "'max_width' must be at least 1"),
             ({"max_width": 10, "max_height": -1}, "'max_height' must be at least 1"),
@@ -838,12 +879,23 @@ def main():
               else f"got {r.get('error', r['status'])}, temporary images {len(TEMP_IMAGES)}")
     del OPEN_IMAGE.get_layers
 
+    # When file-png-export fails (and Gimp.file_save, missing here), the last
+    # fallback, gimp-file-save, must not run interactively: that is its
+    # default, and it could open the export dialog and wait for it.
+    scenario({"file-png-export": (EXECUTION_ERROR, "boom"), "gimp-file-save": (SUCCESS, None)})
+    r = plugin._get_current_image_bitmap({})
+    check("bitmap preview's gimp-file-save fallback runs non-interactively",
+          None if ("run", "gimp-file-save") in CALLS
+          and CONFIG.get("run-mode") == mod.Gimp.RunMode.NONINTERACTIVE
+          else f"got {r.get('error', r['status'])}, calls {CALLS}, config {CONFIG}")
+
     # image_index picks which open image is rendered, full or region.
     second = FakeImage()
     get_images = mod.Gimp.get_images
     mod.Gimp.get_images = staticmethod(lambda: [OPEN_IMAGE, second])
     try:
-        for params in ({"image_index": 1},
+        # A whole-number float or a digit string works, as for every other tool.
+        for params in ({"image_index": 1}, {"image_index": 1.0}, {"image_index": "1"},
                        {"image_index": 1, "region": {"origin_x": 0, "origin_y": 0,
                                                      "width": 10, "height": 10}}):
             scenario(png_export)

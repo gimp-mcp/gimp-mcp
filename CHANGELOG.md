@@ -54,11 +54,184 @@ right command when the versions differ.
   or `image_<index>` for an image that was never saved. All exports used to go to
   `image.jpg` / `image.png`. An export that would overwrite the source file, also through a
   symlinked folder, gets a `_web` suffix. Based on #62 by @gr8monk3ys.
+- `rotate_image` with an angle that isn't a multiple of 90 works. It used to fail, asking
+  for a GIMP procedure that 3.2 doesn't have. It turns every layer, channel and path and
+  the selection clockwise about the image centre and resizes the canvas to fit; the layers
+  are kept, not flattened, and the uncovered corners are transparent. A layer, channel or
+  path with locked contents or position is an error, and the image is left unchanged.
+  Any multiple of 90, such as -180 or 450, uses the lossless rotation. Based on #63 by
+  @yonggandewo12.
+- `convert_color_mode` converts to `INDEXED`. It used to fail with an error about
+  `NO_DITHER`. `num_colors` must be 1-256, and an image with layer groups gets an error
+  asking to merge them first, as GIMP won't index those from a script. So does an image
+  that isn't 8-bit non-linear, without marking it as changed. A conversion GIMP refuses
+  is reported as an error. Converting an image to the mode it already has
+  doesn't mark it as changed; `RGBA` and `GRAYA` then only add alpha. Based on #63 by
+  @yonggandewo12.
+- `get_image_metadata` reports each layer's `is_group` and `layer_type` (`RGB`, `RGBA`,
+  `GRAY`, ...), the image's `resolution_x`/`resolution_y`, and a channel's `color` as hex.
+  `is_group` used to be true for every layer, `layer_type` and channel colors were Python
+  object descriptions, and the resolution was null. Based on #63 by @yonggandewo12.
+- `list_layers` and `get_image_metadata` report `blend_mode` by name (`NORMAL`,
+  `HARD_LIGHT`, ...), as `create_layer` and `set_layer_properties` take it, instead of
+  GIMP's number (`"28"`). A mode those tools don't take is named after GIMP
+  (`ADDITION`, `NORMAL_LEGACY`). `list_layers` reports `offsets` as `[x, y]`; it used to
+  be `[true, x, y]`. Based on #63 by @yonggandewo12.
+- `edit_text` on a layer that isn't a text layer is an error naming it, and leaves the
+  image unchanged. It used to fail with "could not convert ... GimpTextLayer" and mark the
+  image changed. `edit_text` returns the layer's `layer_name` after the edit: new text
+  renames a text layer that still has GIMP's automatic name (its text). Based on #63 by
+  @yonggandewo12.
+- `get_pixel_color` outside the layer is an error giving the layer's size and its offsets
+  in the image (`x` and `y` are relative to the layer). It used to fail with "'NoneType'
+  object is not subscriptable". A fractional or boolean `x` or `y` is an error; 1.9 used to
+  read pixel 1. Based on #63 by @yonggandewo12.
+- `modify_selection` returns `has_selection` and, while something is selected, its bounds
+  (`x`, `y`, `width`, `height`): a shrink or border can leave nothing selected, which it
+  used to report as a plain success. A negative `amount`, which GIMP ignored while the
+  tool reported success, is an error, as is a fractional one for `grow`, `shrink` and
+  `border` (2.7 used to grow by 2) and a non-finite one; the selection is left as it was.
+  `amount` is optional (default 0), so `sharpen`, which ignores it, no longer needs one.
+  Based on #63 by @yonggandewo12.
+- `batch_export` is an error when no image could be exported, giving each image's reason;
+  it used to report success with an empty `exported` list. When some images export, it
+  still succeeds and lists the others in `errors`. A `name_pattern` with fields other than
+  `{name}` and `{index}` is an error before anything is written; it used to fail for each
+  image with only the field's name (`'bogus'`). Based on #63 by @yonggandewo12.
+- `fill_layer` also fills the parts of a layer outside the canvas, as its description
+  promises; it used to fill only the part inside the canvas.
+- `fill_layer` leaves the selection as it was; it used to clear it. It still fills the
+  whole layer. `get_histogram`'s description no longer lists `min` and `max`, which it
+  never returned, and says that only the selected pixels count when there is a selection.
+  Based on #63 by @yonggandewo12.
+- `get_histogram` gives `mean`, `median` and `std_dev` on a 0-255 scale at every
+  precision. For 16-bit, 32-bit and floating-point images they used to be on a 0-1 scale
+  (GIMP's own), so a white layer's mean was 1 instead of 255. Based on #63 by
+  @yonggandewo12.
+- `get_histogram` with a `channel` the layer doesn't have (`alpha` without an alpha
+  channel, `red`, `green`, `blue` or `luminance` on a grayscale layer) is an error saying
+  so. It used to fail with just "gimp-drawable-histogram did not succeed".
+- `save_xcf`, `close_image` with `save_first`, and `get_image_bitmap`'s last-resort export
+  run GIMP's save procedures non-interactively. Those procedures default to interactive, so
+  the bitmap fallback (used only when the PNG export fails) could open GIMP's export
+  dialog and wait for it. Based on #63 by @yonggandewo12.
+- `get_histogram` takes `channel="luminance"` (perceived brightness), which GIMP 3.2 has;
+  `value` is the brightest of red, green and blue. Based on #63 by @yonggandewo12.
+- `crop_to_selection` with no selection (and `autocrop` off) returns an error and leaves
+  the image unchanged. It used to report success, change nothing and mark the image as
+  changed. It now returns the `x`, `y`, `width` and `height` it cropped to, as its docs
+  said; with `autocrop`, the image's new `width` and `height`. Based on #63 by
+  @yonggandewo12.
+- `select_by_color` with a `threshold` outside 0-255 (such as 300 or -5) is an error and
+  the selection is left as it was. GIMP ignored such a value and silently used its own
+  current threshold. Clients writing to the plugin's socket directly also get an error
+  for a fraction such as 1.9, which was cut to 1.
+- `select_by_color` always compares whole colors. A sample criterion that `call_api` code
+  had left set (such as `Gimp.SelectCriterion.RGB_RED`) made it compare one channel only,
+  so selecting red also selected white.
+- `sharpen` with a `threshold` outside 0-255 is an error before anything changes. It
+  failed only after the image was marked as changed, quoting the threshold on GEGL's 0-1
+  scale (300 as 1.176...). Clients writing to the plugin's socket directly also get an
+  error for a fraction such as 1.9, or `true`, which became 1.
+- `select_by_color` returns an error when no pixel of the layer matches the color, and
+  leaves the selection as it was. It used to report success, and with `replace` the
+  selection was silently gone. It now returns `has_selection` and the selection's `x`, `y`,
+  `width` and `height`. Based on #63 by @yonggandewo12.
+- `warp_region` pushes pixels the way GIMP's Warp Transform tool does. It used to turn the
+  whole layer black and report success. `x`/`y` are image coordinates, also on a layer
+  with an offset, and an active selection limits the change. A vector with no push or a
+  push longer than the layer's diagonal plus the radius, an `amount` outside 0-1 (0
+  excluded), a `radius` outside 0.5-5000, a vector that doesn't reach the layer, a layer
+  group or a layer with locked pixels (its own or its group's) is an error, and nothing
+  is warped. Based on #63 by @yonggandewo12.
+- `batch_resize` without `width`, `height` or `scale_factor` returns an error. It used to
+  "resize" every open image to its own size, mark it as changed and report success.
+  A size of 0 or less, a fractional `width`/`height`, no open images, or a result above
+  GIMP's 524288-pixel limit for any image is an error too, and no image is resized; such a
+  limit used to stop the batch halfway. An image already at its target size is left
+  untouched, and each result says whether the image was `scaled`. Based on #63 by
+  @yonggandewo12.
+- `scale_image` and `scale_to_fit` use their `interpolation`. They used to ignore it and
+  scale with GIMP's current setting.
+- The plug-in's socket server no longer hangs on a bad request. A request that isn't JSON
+  or UTF-8 gets an error reply and ends the connection; it used to get no reply, and its
+  connection held a thread for good. Two requests that arrive together each get a reply
+  (neither used to); to send several on one connection reliably, send
+  `disable_auto_disconnect` first. A client that sends nothing, or half a request, is
+  disconnected after a timeout (300 s idle, 30 s to finish a request). A reply that can't
+  be encoded as JSON comes back as an error instead of no reply. Replies end with a
+  newline. `disable_auto_disconnect` keeps only its own connection open, and the
+  connection now serves further requests; before, it served one request whatever the
+  setting. Based on #63 by @yonggandewo12.
+- `call_api` output contains only what the command printed. Log lines from other
+  connections running at the same time ("Connected to client: ...") used to appear in it,
+  and after a command that raised, the plug-in's own log output was lost until the
+  plug-in restarted. Based on #63 by @yonggandewo12.
+- `adjust_curves` checks custom `points` before changing anything: 2-1024 `[input, output]`
+  pairs (or a flat list of them), each value 0-255, no two points with the same input.
+  A `NaN` value used to crash GIMP. Values outside 0-255 were clipped, so a curve could
+  silently do nothing; an odd count or a single point failed with GIMP's bare "execution
+  error" and left the image marked as changed; `[input, output, extra]` triples were read
+  as other pairs; of two points with the same input, the last one silently won. A
+  `channel` the layer doesn't have (`alpha` without an alpha channel, `red`, `green` or
+  `blue` on a grayscale layer) is an error too; it failed the same bare way. On an indexed
+  layer `adjust_curves` is an error; it reported success and changed nothing. Based on
+  #63 by @yonggandewo12.
+- `call_api` with `"pyGObject-eval"`, as documented, returns the values of the
+  expressions. It used to run them as statements and return empty strings. Expressions,
+  also with `"python-fu-eval"`, see the variables earlier commands set. `args` that aren't
+  `[mode, [code, ...]]` are an error and nothing runs; a string in place of the list
+  used to run each of its characters. A request with an unknown `type` and no `args` gets
+  an error naming the type; it used to fail with just `'params'` or `'args'`. Only clients
+  writing to the socket themselves can send one: the MCP server sends only types the
+  plug-in knows. Based on
+  #63 by @yonggandewo12.
+- The tool docs say which layer a tool uses when no layer is given: the selected one,
+  else the top one. They said "the active layer", which GIMP 3 doesn't have. `new_canvas`
+  says `name` names the background layer, not the image. The README's GIMP 3.2
+  compatibility table no longer recommends a procedure 3.2 doesn't have
+  (`gimp-text-fontname`) or GEGL operations that can't be applied to a layer
+  (`gegl:linear-gradient`), and the protocol docs no longer recommend
+  `image.get_active_layer()`, which doesn't exist. Based on #63 by @yonggandewo12.
+- An `image_index` or `layer_index` that isn't a whole number 0 or more is an error, and
+  nothing changes. A negative one used to count from the end: `image_index=-1` acted on
+  another open image, and `layer_index=-1` on the bottom layer, so `rename_layer`,
+  `delete_layer`, `set_layer_properties` or `reorder_layer` changed the wrong layer and
+  reported success. `-0.5`, `1.9` and `true` picked a nearby index the same way, and a
+  bad `layer_index` was ignored when a layer name was also given. Based on #63 by
+  @yonggandewo12.
+- Tools that change a layer's pixels (the adjustment, filter, fill and drawing tools,
+  `gradient_fill` and `warp_region`) refuse a layer group, a layer with locked pixels and a
+  layer in a group with locked pixels, with an error saying which, and change nothing.
+  They used to fail with GIMP's message, or none, and leave the image marked as changed.
+  `sharpen`, `blur`, `denoise`, `apply_gaussian_blur`, `apply_pixelate`, `apply_emboss`,
+  `apply_vignette` and `apply_noise` were worse: they changed locked pixels and reported
+  success, and on a layer group reported success without changing anything.
+  `apply_drop_shadow` refuses a layer group, which it failed on the same way; it still
+  shadows a locked layer, which it only reads. `convert_color_mode` RGBA or GRAYA refuses
+  a locked layer that needs alpha before converting; it used to convert the image, then
+  fail with "Adding alpha to layer 'X' failed: success".
 
 ### Changed
+- Some results have a new format, so clients that read them may need updating (details
+  under Fixed): `list_layers` reports `offsets` as `[x, y]` (was `[true, x, y]`);
+  `list_layers` and `get_image_metadata` report `blend_mode` by name (was GIMP's number);
+  `get_histogram`'s `mean`, `median` and `std_dev` are 0-255 at every precision (were 0-1
+  above 8 bit); `call_api` with `"pyGObject-eval"` returns the expressions' values (was
+  empty strings).
 - `create_layer` and `set_layer_properties` reject unknown blend modes instead of
   using Normal, and accept names like `hard light` and `hard-light` (#149).
   An empty `blend_mode` leaves the mode unchanged in `set_layer_properties`.
+- An unknown option name is an error that names the valid ones, and nothing changes.
+  Tools used to replace it with a default and go on: `operation="bogus"` in
+  `select_rectangle`, `select_ellipse` and `select_by_color` replaced the selection, and
+  `interpolation`, `anchor` (`resize_canvas`), `direction` (`flip_image`), `mode`
+  (`desaturate`), `color_range`, `range` (`adjust_color_balance`), `channel` and `preset`
+  (`adjust_curves`, `get_histogram`), `gradient_type`, `color_mode` (`new_canvas`, which
+  reported the unknown mode as if it were used), `tool` (`draw_line`), `platform`
+  (`export_icon_sizes`) and `source` (`export_sprite_sheet`) fell back the same way.
+  `export_social_media_kit` skipped unknown `platforms`. Names ignore case and surrounding
+  spaces. Based on #63 by @yonggandewo12.
 - Some color strings that used to paint now return an error. Use hex or
   `rgb(r, g, b)` instead:
   - `cmyk()` and `cmyka()` colors. GIMP read some of them, but they were never documented,

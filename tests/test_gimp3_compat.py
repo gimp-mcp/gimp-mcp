@@ -11,11 +11,15 @@ Contracts tested:
    edit_clear()/edit_fill() with no selection to the ENTIRE layer, which
    silently destroys image content (#138).
 
-2. fill_layer clears the active selection: it selects all, fills, then
-   selects none. It must NOT save/restore a pre-existing selection: on
-   GIMP 3.2 the select_item + remove_channel pair corrupts the image's
-   selection state when run from the socket worker thread (later PDB
-   strokes then fail with "no selection to stroke").
+2. fill_layer fills the whole layer and leaves the selection as it was:
+   with a selection it keeps a copy, selects none (with no selection
+   edit_fill() fills the whole layer, also outside the canvas, where select
+   all would stop), fills, and puts the copy back with combine_masks() (also
+   when the fill fails); with none it just fills. If the copy or the restore
+   fails, the context and the undo group still close. The copy must never be added to
+   the image: an added channel becomes the selected item, and once removed
+   it leaves no layer selected, so later strokes in a displayed image fail
+   with "There is no selection to stroke".
 
 3. undo/redo are not exposed by GIMP 3's Python API (libgimp offers undo
    grouping only); they must return the clear "not supported" error (#41,
@@ -59,6 +63,16 @@ class FakeLayer:
     def add_alpha(self):
         pass
 
+    # Not a group, unlocked, at the top level: the tools may change its pixels.
+    def is_group(self):
+        return False
+
+    def get_lock_content(self):
+        return False
+
+    def get_parent(self):
+        return None
+
 
 # Live display windows per image id, mirroring GIMP's rules that an image
 # cannot be deleted while any display still shows it, and that GIMP deletes
@@ -101,6 +115,35 @@ class FakeChannel:
         return self._id
 
 
+class FakeSelectionCopy:
+    """A selection copy that is never added to the image."""
+
+    def __init__(self):
+        self.deleted = False
+
+    def delete(self):
+        self.deleted = True
+        _LIVE["state"]["ops"].append("delete_copy")
+
+
+class FakeSelectionMask:
+    def copy(self):
+        st = _LIVE["state"]
+        st["ops"].append("copy")
+        if not st.get("copy_ok", True):
+            return None
+        st["copy"] = FakeSelectionCopy()
+        return st["copy"]
+
+    def combine_masks(self, other, op, x, y):
+        st = _LIVE["state"]
+        st["ops"].append("restore")
+        st["restored_from"] = (other, op, x, y)
+        if st.get("restore_raises"):
+            raise RuntimeError("combine_masks failed")
+        return True
+
+
 class FakeImage3:
     """GIMP 3 shaped: no undo/redo, no display accessors."""
 
@@ -122,6 +165,9 @@ class FakeImage3:
 
     def get_channels(self):
         return self._channels
+
+    def get_selection(self):
+        return FakeSelectionMask()
 
     def undo_group_start(self):
         self.undo_groups += 1
@@ -151,11 +197,14 @@ def install_gi_stub(images, state):
     images: list returned by Gimp.get_images().
     state: dict with "bounds" (the Gimp.Selection.bounds() return value),
            "calls" (fill op names performed on a drawable), and "ops"
-           (Selection.all / none and fill ops, in the order they ran).
-           "saved_channel" / "sel_restored_from" are only set if a handler
-           saves or restores a selection — which fill_layer must not do.
+           (Selection.all / none, fill ops, and the selection copy/restore,
+           in the order they ran); "fill_ok" (default True) is what
+           edit_fill returns. "saved_channel" / "sel_restored_from" are only
+           set if a handler saves a selection into an image channel or
+           restores one with select_item, which fill_layer must not do.
     """
     _LIVE["displays"] = {}
+    _LIVE["state"] = state
     gi = types.ModuleType("gi")
     gi.require_version = lambda *a, **k: None
     repository = types.ModuleType("gi.repository")
@@ -204,6 +253,10 @@ def install_gi_stub(images, state):
                 return state["bounds"]
 
             @staticmethod
+            def is_empty(image):
+                return not state["bounds"][1]
+
+            @staticmethod
             def save(image):
                 ch = FakeChannel()
                 image._channels.append(ch)
@@ -229,7 +282,7 @@ def install_gi_stub(images, state):
             def edit_fill(d, fill_type):
                 state["calls"].append("edit_fill")
                 state["ops"].append("edit_fill")
-                return True
+                return state.get("fill_ok", True)
 
         @staticmethod
         def get_images():
@@ -247,11 +300,11 @@ def install_gi_stub(images, state):
 
         @staticmethod
         def context_push():
-            pass
+            state["context_depth"] = state.get("context_depth", 0) + 1
 
         @staticmethod
         def context_pop():
-            pass
+            state["context_depth"] = state.get("context_depth", 0) - 1
 
         @staticmethod
         def context_set_opacity(v):
@@ -346,28 +399,66 @@ def main():
           and img.undo_groups == 0, r)
 
     # --- fill_layer contract ---
-    # fill_layer clears an active selection (select-all -> fill ->
-    # select-none) and must NOT save/restore one: no channel may be
-    # created and no selection restored from one. The three steps are
-    # recorded in one ordered list, so a fill that ran before select-all
-    # (and thus hit only the user's selection) fails the check.
+    # fill_layer fills the whole layer and puts an active selection back:
+    # copy -> select none -> fill -> restore the copy (combine_masks REPLACE)
+    # -> delete the copy. Select all would stop at the canvas edge. The copy
+    # must never be added to the image (no Selection.save, no select_item, no
+    # new channel). The steps are recorded in one ordered list, so a fill
+    # that ran before the selection was cleared (and thus hit only the
+    # user's selection) fails the check.
     state["calls"] = []
     state["ops"] = []
     r = p._fill_layer({"image_index": 0, "color": "#ff0000"})
-    check("fill_layer_clears_selection",
-          r.get("status") == "success" and state["ops"] == ["all", "edit_fill", "none"]
-          and "sel_restored_from" not in state
-          and img.get_channels() == [], r)
+    check("fill_layer_keeps_selection",
+          r.get("status") == "success"
+          and state["ops"] == ["copy", "none", "edit_fill", "restore", "delete_copy"]
+          and state["restored_from"][0] is state["copy"]
+          and state["restored_from"][1:] == (0, 0, 0)  # REPLACE at (0, 0)
+          and "saved_channel" not in state and "sel_restored_from" not in state
+          and img.get_channels() == [] and img.undo_groups == 0
+          and state.get("context_depth", 0) == 0, r)
 
-    # With no selection there is nothing to preserve. The fake's
-    # Selection.none does not update bounds, so reset them to start this
-    # case as if the image had no selection.
+    # A failed fill still puts the selection back.
+    state["ops"] = []
+    state["fill_ok"] = False
+    r = p._fill_layer({"image_index": 0, "color": "#ff0000"})
+    check("fill_layer_failed_fill_restores_selection",
+          r.get("status") == "error"
+          and state["ops"] == ["copy", "none", "edit_fill", "restore", "delete_copy"]
+          and img.undo_groups == 0
+          and state.get("context_depth", 0) == 0, r)
+    state["fill_ok"] = True
+
+    # A copy GIMP refuses: an error before anything changes, nothing left open.
+    state["ops"] = []
+    state["copy_ok"] = False
+    r = p._fill_layer({"image_index": 0, "color": "#ff0000"})
+    check("fill_layer_failed_copy_fills_nothing",
+          r.get("status") == "error" and "Copying the selection" in r.get("error", "")
+          and state["ops"] == ["copy"] and img.undo_groups == 0
+          and state.get("context_depth", 0) == 0, r)
+    state["copy_ok"] = True
+
+    # A restore that raises still deletes the copy and closes the undo group.
+    state["ops"] = []
+    state["restore_raises"] = True
+    r = p._fill_layer({"image_index": 0, "color": "#ff0000"})
+    check("fill_layer_failed_restore_closes_everything",
+          r.get("status") == "error"
+          and state["ops"] == ["copy", "none", "edit_fill", "restore", "delete_copy"]
+          and img.undo_groups == 0
+          and state.get("context_depth", 0) == 0, r)
+    state["restore_raises"] = False
+
+    # With no selection there is nothing to keep: edit_fill fills the whole
+    # layer as it is.
     state["ops"] = []
     state["calls"] = []
     state["bounds"] = (True, False, 0, 0, 0, 0)
     r = p._fill_layer({"image_index": 0, "color": "#ffffff"})
     check("fill_layer_no_selection",
-          r.get("status") == "success" and state["ops"] == ["all", "edit_fill", "none"], r)
+          r.get("status") == "success" and state["ops"] == ["edit_fill"]
+          and state.get("context_depth", 0) == 0, r)
 
     # --- undo/redo ---
     # Not exposed by GIMP 3's Python API: the clear "not supported" error,

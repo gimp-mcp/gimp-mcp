@@ -55,6 +55,11 @@ check("module keeps check_server as a sync function",
       not inspect.iscoroutinefunction(server.check_server))
 check("tool parameters are unchanged by the wrapper",
       "max_width" in server.mcp._tool_manager.get_tool("get_image_bitmap").parameters["properties"])
+# sharpen ignores amount, so modify_selection must not require it.
+check("modify_selection's amount is optional (default 0)",
+      server.mcp._tool_manager.get_tool("modify_selection").parameters["required"] == ["operation"]
+      and inspect.signature(server.modify_selection).parameters["amount"].default == 0,
+      server.mcp._tool_manager.get_tool("modify_selection").parameters.get("required"))
 
 # A fake tool, registered the same way as the real ones.
 log = []

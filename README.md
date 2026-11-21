@@ -24,7 +24,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- 79 dedicated tool commands covering every major GIMP operation
+- 80 dedicated tool commands covering every major GIMP operation
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
 ## Key Features
@@ -32,8 +32,8 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 | | |
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
-| 🎨 **79 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
-| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (59/59 passing) |
+| 🎨 **80 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested by `run_tests.py` |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
 | 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
@@ -284,7 +284,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | Tool | Description |
 |---|---|
 | `create_layer` | New empty layer |
-| `duplicate_layer` | Duplicate active layer |
+| `duplicate_layer` | Duplicate a layer (default: the selected one) |
 | `delete_layer` | Delete named layer |
 | `rename_layer` | Rename layer |
 | `set_layer_properties` | Opacity, blend mode, visibility |
@@ -413,7 +413,7 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 
 | Script | Description |
 |---|---|
-| [`run_tests.py`](run_tests.py) | 59-test suite — run against your GIMP to verify all tools work |
+| [`run_tests.py`](run_tests.py) | Test suite — run against your GIMP to verify all tools work |
 | [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
 | [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
 | [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
@@ -423,7 +423,7 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 Run the test suite to verify your setup:
 ```bash
 python run_tests.py
-# Expected: 59/59 PASSED
+# Expected: === TOTAL: N/N PASSED === (every test passes)
 ```
 
 ---
@@ -455,12 +455,17 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 | Issue | Fix |
 |---|---|
 | `layer.copy(False)` → error | `layer.copy()` takes no args in GIMP 3.2 |
-| `Gimp.text_fontname()` removed | Use PDB `gimp-text-fontname` |
-| `gimp-blend` removed | Use GEGL `gegl:linear-gradient` / `gegl:radial-gradient` |
+| `Gimp.text_fontname()` and PDB `gimp-text-fontname` removed | Use `Gimp.TextLayer.new()` (PDB `gimp-text-font` as a fallback) |
+| `gimp-blend` removed | Use `drawable.edit_gradient_fill()` (PDB `gimp-drawable-edit-gradient-fill`). `gegl:linear-gradient` and `gegl:radial-gradient` are source operations, which `Gimp.DrawableFilter` can't apply |
+| `gimp-levels-stretch`, `plug-in-gauss`, `plug-in-unsharp-mask`, `plug-in-iwarp` removed | `gimp-drawable-levels-stretch`; GEGL filters (`gegl:gaussian-blur`, `gegl:unsharp-mask`, ...) through `Gimp.DrawableFilter`; `warp_region` runs `gegl:warp` in its own GEGL graph, since `Gimp.DrawableFilter` can't apply it |
+| GEGL filter properties aren't on the filter | Set them on `filter.get_config()`, then call `filter.update()` and `drawable.merge_filter(filter)` |
 | `GimpDoubleArray` TypeError in curves | Use `drawable.curves_spline()` directly |
 | `Gimp.fonts_get_list()` returns `Font` objects | Convert via `.get_name()` before JSON serialization |
-| `image.select_none()` removed | Use PDB `gimp-selection-none` |
+| `image.select_none()` removed | Use `Gimp.Selection.none(image)` |
 | `layer.get_pixel()` returns `Gegl.Color` | Use `.get_rgba()` to extract float components |
+| `Gimp.get_displays()` removed | The plugin keeps track of the displays it opens |
+| The PDB has no undo/redo procedure | `undo` and `redo` return an error saying so |
+| `Gegl.Color.new()` misreads most colors | It turns unknown names (e.g. `orange`) into cyan and reads `rgb()` values as linear, so the plugin parses colors itself and passes hex |
 
 ---
 
