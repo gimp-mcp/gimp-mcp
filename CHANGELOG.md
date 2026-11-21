@@ -13,6 +13,8 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
 ### Fixed
 - A tool call that GIMP refuses no longer also shows an error message in GIMP. The tool
   already returns GIMP's reason; the message duplicated it, and calls that are expected
@@ -438,7 +440,8 @@ First release on PyPI as `gimp-mcp-plugin` (#96).
 - `get_pixel_color` returns sRGB instead of linear values (#55).
 - The plugin no longer crashes after a client-side timeout (#82).
 
-[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.1...v0.3.0
