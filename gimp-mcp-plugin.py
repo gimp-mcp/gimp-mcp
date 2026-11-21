@@ -3905,22 +3905,18 @@ class MCPPlugin(Gimp.PlugIn):
         """Grow/shrink/feather/border/sharpen selection."""
         try:
             image_index = self._index(params.get("image_index", 0), "image_index")
-            operation   = self._option("operation", params.get("operation", "grow"), {
-                "grow":    Gimp.Selection.grow,
-                "shrink":  Gimp.Selection.shrink,
-                "feather": Gimp.Selection.feather,
-                "border":  Gimp.Selection.border,
-                "sharpen": Gimp.Selection.sharpen,
-            })
+            name        = self._option("operation", params.get("operation", "grow"), {
+                n: n for n in ("grow", "shrink", "feather", "border", "sharpen")})
+            operation   = getattr(Gimp.Selection, name)
             image = self._get_image(image_index)
-            if operation is Gimp.Selection.sharpen:
+            if name == "sharpen":
                 ok = operation(image)
             else:
                 # Checked before anything changes: GIMP refused a negative amount
                 # without an error (the tool reported success), and the int()
                 # behind grow/shrink/border truncated 2.7 to 2.
                 raw = params.get("amount", 0)
-                if operation is Gimp.Selection.feather:
+                if name == "feather":
                     # The feather radius may be fractional; NaN and infinity are
                     # refused here (NaN crashed GIMP in another tool).
                     try:
@@ -3935,7 +3931,7 @@ class MCPPlugin(Gimp.PlugIn):
                     raise ValueError(
                         f"amount must be between 0 and {self.MODIFY_SELECTION_MAX}, got {raw!r}")
                 ok = operation(image, amount)
-            self._check_ok(ok, f"modify_selection {params.get('operation', 'grow')!r}")
+            self._check_ok(ok, f"modify_selection {name!r}")
             Gimp.displays_flush()
             # A shrink or a border can leave nothing selected (as can any
             # operation on an empty selection); that is reported, not an error.
