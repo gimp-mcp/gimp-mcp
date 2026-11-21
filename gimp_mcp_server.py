@@ -1636,17 +1636,27 @@ def select_by_color(
     """Select regions by color similarity.
 
     The threshold is a color-similarity tolerance in 0-255 sRGB units: a pixel
-    is selected when its color is within that distance of the target. Anti-
-    aliased edges are a gradient between the target and the surrounding color,
-    so at the default threshold 15 only the solid core of a shape is selected
-    and its anti-aliased fringe is missed. To select a full anti-aliased shape,
-    raise the threshold toward 128 and/or follow with modify_selection
-    (operation "grow") to bridge the fringe.
+    is selected when its color is within that distance of the target. The
+    selection is global to the sampled layer, so a higher threshold also
+    selects other regions with similar colors — a black shape over a gray
+    background selects the background too at threshold 128. Inspect the
+    selection after raising the threshold. The threshold is also not a hard
+    cutoff: GIMP's antialiasing may partially select pixels whose color is
+    slightly beyond it.
+
+    For a shape blended into the sampled layer, its anti-aliased edges are a
+    gradient between the target and the surrounding color, so at the default
+    threshold 15 only the solid core of the shape is selected and its
+    anti-aliased fringe is missed. To select a full anti-aliased shape, raise
+    the threshold toward 128 and/or follow with modify_selection (operation
+    "grow") to bridge the fringe. A shape drawn on a transparent part of the
+    layer is different: its fringe pixels are its own color at partial opacity,
+    which may already match the target at the default threshold.
 
     Parameters:
     - color: Target color as CSS name, hex (#rrggbb), or rgb() string
     - threshold: Color similarity tolerance in 0-255 sRGB units, a whole number
-      (default 15); see above for anti-aliased edges
+      (default 15); see above for anti-aliased edges and similar colors
     - operation: "replace" (default), "add", "subtract", "intersect"
     - image_index: Target image index (default 0)
     - layer_name: Layer to sample from; defaults to the selected layer, else the top layer

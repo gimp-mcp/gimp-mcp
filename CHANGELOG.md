@@ -241,11 +241,16 @@ right command when the versions differ.
   - Text after the closing paren, as in `rgb(1,2,3) junk`, or another word in place of
     `rgb`, as in `rgbx(1,2,3)`.
   - An empty value from a doubled, leading or trailing comma, as in `rgb(255,0,0,)`.
-- `select_by_color` documents that its `threshold` is a color-similarity tolerance
-  in 0-255 sRGB units and that anti-aliased edges are a gradient, so the default
-  threshold 15 selects only the solid core of a shape. To select a full
-  anti-aliased shape, raise the threshold and/or follow with `modify_selection`
-  (operation `grow`) (#133).
+- `select_by_color` documents that its `threshold` is a color-similarity
+  tolerance in 0-255 sRGB units (default 15). It also warns that the selection
+  is global, so a higher threshold selects other regions with similar colors;
+  that the threshold is not a hard cutoff, as antialiasing may partially
+  select pixels slightly beyond it; and that anti-aliased edges of a shape
+  blended into the layer are a gradient, so the default threshold selects only
+  the solid core — to select a full anti-aliased shape, raise the threshold
+  and/or follow with `modify_selection` (operation `grow`) — while the fringe
+  of a shape on a transparent part of the layer is its own color at partial
+  opacity and may already match at the default threshold (#133).
 
 ### Added
 - Percentages in `rgb()` / `rgba()` colors, such as `rgb(50%, 50%, 50%)`, and the
