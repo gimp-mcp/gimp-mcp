@@ -350,7 +350,8 @@ def new_canvas(
     Parameters:
     - width: Canvas width in pixels
     - height: Canvas height in pixels
-    - name: Layer/image name (default: "Untitled")
+    - name: Name of the background layer (default: "Untitled"). It doesn't name the
+            image: GIMP shows a new image as "[Untitled]" until it is saved
     - color_mode: "RGB" (default), "RGBA", "GRAY", "GRAYA"
     - fill: Fill color for the background layer. Any CSS color name or
             hex string: "white" (default), "black", "transparent",
@@ -648,9 +649,8 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     """Call GIMP 3.2 API methods through PyGObject console.
 
     GIMP MCP Protocol:
-    - Use api_path="exec" to execute Python code in GIMP
-    - args[0] should be "pyGObject-console" for executing commands
-    - args[1] should be array of Python code strings to execute
+    - args[0] is "pyGObject-console" to run code, or "pyGObject-eval" to evaluate expressions
+    - args[1] is a list of Python code strings, run one after another
     - Commands execute in persistent context - imports and variables persist
     - Always call Gimp.displays_flush() after drawing operations
 
@@ -714,12 +714,17 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - Full API documentation: https://developer.gimp.org/api/3.0/libgimp/
 
     Parameters:
-    - api_path: Use "exec" for Python execution
-    - args: ["pyGObject-console", ["python_code_array"]] or ["pyGObject-eval", ["expression"]]
-    - kwargs: Dictionary of keyword arguments (rarely used)
+    - api_path: Pass "exec"; the plugin doesn't read it
+    - args: ["pyGObject-console", ["code", ...]] runs each string as Python code and
+      returns what it prints, one string per entry. ["pyGObject-eval", ["expression", ...]]
+      evaluates each expression and returns its value as a string (str(value)); it can
+      read variables that earlier calls set. Any mode other than "pyGObject-eval" (or
+      "python-fu-eval") runs code like "pyGObject-console". If a string raises, the call
+      returns that error: the strings before it have run, but their output is lost.
+    - kwargs: Not used
 
     Returns:
-    - JSON string of the result or error message
+    - JSON list of the results, or "Error: " and the error message
     """
     try:
         conn = get_gimp_connection()
@@ -938,7 +943,10 @@ def batch_export(
     Returns:
     - exported: list of {file_path, name, width, height}
     - count: number of files written
-    - errors: list of any export errors
+    - errors: list of {index, error} for images that failed to export
+    When no image could be exported, the call fails with each image's error instead.
+    A name_pattern with fields other than {name} and {index} is an error, and
+    nothing is exported.
     """
     try:
         params: dict = {
@@ -969,7 +977,7 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
 
     Parameters:
     - image_index: Index of the target image (default 0)
-    - layer_name: Name of the layer to adjust; defaults to active layer
+    - layer_name: Name of the layer to adjust; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -997,10 +1005,15 @@ def adjust_curves(
 
     Parameters:
     - preset: Built-in curve shape — "s_curve" (default), "lighten", "darken", "contrast"
-    - points: Custom control points as [[input, output], ...] override (overrides preset)
-    - channel: "value" (all), "red", "green", "blue", "alpha"
+    - points: Custom control points as [[input, output], ...] (overrides preset):
+              2-1024 points, each value 0-255, inputs in any order but no two
+              alike. A flat list [input, output, input, output, ...] works too.
+              Anything else is an error, and the layer is left as it was.
+    - channel: "value" (all), "red", "green", "blue", "alpha". "alpha" needs a layer
+               with an alpha channel; "red", "green" and "blue" need an RGB layer.
+               An indexed layer is an error: convert the image first.
     - image_index: Target image index (default 0)
-    - layer_name: Layer to adjust; defaults to active layer
+    - layer_name: Layer to adjust; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1035,7 +1048,7 @@ def adjust_brightness_contrast(
     - brightness: -127 to +127 (default 0)
     - contrast: -127 to +127 (default 0)
     - image_index: Target image index (default 0)
-    - layer_name: Layer to adjust; defaults to active layer
+    - layer_name: Layer to adjust; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1073,7 +1086,7 @@ def adjust_hue_saturation(
     - lightness: Lightness shift -100 to +100 (default 0)
     - color_range: "all", "red", "yellow", "green", "cyan", "blue", "magenta" (default "all")
     - image_index: Target image index (default 0)
-    - layer_name: Layer to adjust; defaults to active layer
+    - layer_name: Layer to adjust; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1113,7 +1126,7 @@ def adjust_color_balance(
     - yellow_blue: -100 to +100 (default 0)
     - range: "shadows", "midtones" (default), "highlights"
     - image_index: Target image index (default 0)
-    - layer_name: Layer to adjust; defaults to active layer
+    - layer_name: Layer to adjust; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1149,9 +1162,10 @@ def sharpen(
     Parameters:
     - amount: Sharpening strength 0-500 (default 50.0)
     - radius: Blur radius for the mask in pixels (default 3.0)
-    - threshold: Minimum difference before sharpening is applied (default 0)
+    - threshold: Minimum difference before sharpening is applied, a whole number 0-255
+      (default 0)
     - image_index: Target image index (default 0)
-    - layer_name: Layer to sharpen; defaults to active layer
+    - layer_name: Layer to sharpen; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1186,7 +1200,7 @@ def blur(
     - radius_x: Horizontal blur radius in pixels (default 5.0)
     - radius_y: Vertical blur radius in pixels (default 5.0)
     - image_index: Target image index (default 0)
-    - layer_name: Layer to blur; defaults to active layer
+    - layer_name: Layer to blur; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1218,7 +1232,7 @@ def denoise(
     Parameters:
     - strength: Noise reduction strength 0-100 (default 50)
     - image_index: Target image index (default 0)
-    - layer_name: Layer to denoise; defaults to active layer
+    - layer_name: Layer to denoise; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1249,7 +1263,7 @@ def desaturate(
     Parameters:
     - mode: Desaturation algorithm — "luminosity" (default), "luma", "average", "lightness"
     - image_index: Target image index (default 0)
-    - layer_name: Layer to desaturate; defaults to active layer
+    - layer_name: Layer to desaturate; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1278,7 +1292,7 @@ def invert_colors(
 
     Parameters:
     - image_index: Target image index (default 0)
-    - layer_name: Layer to invert; defaults to active layer
+    - layer_name: Layer to invert; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -1376,11 +1390,15 @@ def crop_to_selection(
 ) -> dict:
     """Crop the image canvas to the current selection bounds.
 
+    The selection itself stays. With no selection (and autocrop off) this returns
+    an error and changes nothing.
+
     Parameters:
     - autocrop: If True, auto-detect crop bounds instead of using selection (default False)
     - image_index: Target image index (default 0)
 
-    Returns: {status, x, y, width, height} — crop region applied
+    Returns: {status, x, y, width, height}: the selection's bounds that the image
+    was cropped to. With autocrop, only {status, width, height}, the image's new size.
     """
     try:
         conn = get_gimp_connection()
@@ -1440,11 +1458,16 @@ def rotate_image(
     """Rotate the entire image.
 
     Parameters:
-    - angle: Rotation in degrees — 90, 180, 270 use lossless GIMP rotation;
-             other values rotate all layers with interpolation and flatten
+    - angle: Rotation in degrees, clockwise (negative = counter-clockwise).
+             Multiples of 90 rotate losslessly. Other angles rotate every
+             layer, channel, path and the selection about the image centre with
+             interpolation, and resize the canvas to fit the rotated image; the
+             uncovered corners are transparent. Layers are kept (nothing is
+             flattened). A layer, channel or path with locked contents or
+             position is an error, and the image is left unchanged.
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns status dict with the angle and the new width and height.
     """
     try:
         conn = get_gimp_connection()
@@ -1614,12 +1637,17 @@ def select_by_color(
 
     Parameters:
     - color: Target color as CSS name, hex (#rrggbb), or rgb() string
-    - threshold: Color similarity tolerance 0-255 (default 15)
+    - threshold: Color similarity tolerance, a whole number 0-255 (default 15)
     - operation: "replace" (default), "add", "subtract", "intersect"
     - image_index: Target image index (default 0)
-    - layer_name: Layer to sample from; defaults to active layer
+    - layer_name: Layer to sample from; defaults to the selected layer, else the top layer
 
-    Returns status dict.
+    Returns an error, and leaves the selection as it was, when no pixel of the
+    layer matches the color.
+
+    Returns: {status, has_selection, x, y, width, height} — the bounds of the
+    resulting selection; x/y/width/height are left out when subtract or
+    intersect leaves nothing selected.
     """
     try:
         conn = get_gimp_connection()
@@ -1702,17 +1730,21 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
 def modify_selection(
     ctx: Context,
     operation: str,
-    amount: float,
+    amount: float = 0,
     image_index: int = 0
 ) -> dict:
     """Grow, shrink, feather, border, or sharpen the current selection.
 
     Parameters:
     - operation: "grow", "shrink", "feather", "border", "sharpen"
-    - amount: Pixel radius for grow/shrink/feather/border; ignored for sharpen
+    - amount: Pixel radius, 0 or more (default 0): a whole number for
+      grow/shrink/border, any number for feather; ignored for sharpen
     - image_index: Target image index (default 0)
 
-    Returns status dict.
+    Returns {status, has_selection}, plus x, y, width, height (the selection's
+    bounds) when something is still selected. A shrink or border can leave
+    nothing selected, and on an empty selection the operations do nothing;
+    has_selection is then false.
     """
     try:
         conn = get_gimp_connection()
@@ -1801,7 +1833,7 @@ def duplicate_layer(
     """Duplicate a layer and insert the copy above it.
 
     Parameters:
-    - layer_name: Name of the layer to duplicate; defaults to active layer
+    - layer_name: Name of the layer to duplicate; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns: {layer_name, layer_id}
@@ -1831,10 +1863,12 @@ def delete_layer(
 
     Parameters:
     - layer_name: Name of the layer to delete
-    - layer_index: Position index of the layer (alternative to layer_name)
+    - layer_index: Position of the layer among the image's top-level layers, 0 = top
+      (alternative to layer_name)
     - image_index: Target image index (default 0)
 
-    Provide either layer_name or layer_index. Defaults to active layer if neither given.
+    Provide either layer_name or layer_index. If neither is given, defaults to the
+    selected layer, else the top layer.
 
     Returns status dict.
     """
@@ -1866,7 +1900,8 @@ def rename_layer(
     Parameters:
     - new_name: New name for the layer
     - old_name: Current name of the layer to rename
-    - layer_index: Position index alternative to old_name
+    - layer_index: Position of the layer among the image's top-level layers, 0 = top
+      (alternative to old_name)
     - image_index: Target image index (default 0)
 
     Returns: {old_name, new_name}
@@ -1900,7 +1935,8 @@ def set_layer_properties(
     """Set properties on an existing layer.
 
     Parameters:
-    - layer_name / layer_index: Identify the layer (defaults to active layer)
+    - layer_name / layer_index: Identify the layer; layer_index is its position among the
+      image's top-level layers, 0 = top (defaults to the selected layer, else the top layer)
     - opacity: New opacity 0-100 (omit to leave unchanged)
     - blend_mode: NORMAL, MULTIPLY, SCREEN, OVERLAY, DARKEN, LIGHTEN, DODGE, BURN,
       HARD_LIGHT, SOFT_LIGHT, DIFFERENCE, HUE, SATURATION, COLOR, LUMINOSITY, or
@@ -2014,7 +2050,10 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
     Parameters:
     - image_index: Target image index (default 0)
 
-    Returns: {layers: [{name, id, visible, opacity, blend_mode, width, height, has_alpha}], count}
+    Returns: {layers: [{index, name, id, visible, opacity, blend_mode, width, height,
+    has_alpha, offsets: [x, y]}], count}. blend_mode is a name create_layer and
+    set_layer_properties take (NORMAL, MULTIPLY, ...); a mode they don't take is
+    named after GIMP's (ADDITION, NORMAL_LEGACY, ...).
     """
     try:
         conn = get_gimp_connection()
@@ -2040,13 +2079,14 @@ def fill_layer(
 ) -> dict:
     """Fill an entire layer with a solid color.
 
-    Clears any active selection; use fill_selection to fill only the
-    selection.
-
     Parameters:
     - color: Fill color as CSS name, hex, or rgb() string
-    - layer_name: Layer to fill; defaults to active layer
+    - layer_name: Layer to fill; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
+
+    Fills the whole layer, also any part outside the canvas, whatever is selected,
+    and leaves the selection as it was (fill_selection fills only the selection). A layer with locked alpha keeps its
+    transparent pixels transparent.
 
     Returns status dict.
     """
@@ -2083,7 +2123,7 @@ def fill_selection(
     - fill_type: "foreground" (default), "background", "pattern", or "transparent"
                  (clears the selected pixels)
     - image_index: Target image index (default 0)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
 
     Returns status dict.
     """
@@ -2149,7 +2189,7 @@ def draw_line(
     - color: Stroke color (CSS / hex / rgb); uses current foreground if omitted
     - width: Stroke width in pixels, 1-10000 (default 2.0)
     - tool: "pencil" (default, hard edge) or "paintbrush" (soft edge)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2188,7 +2228,7 @@ def draw_rectangle(
     - width, height: Rectangle dimensions
     - color: Stroke color; uses current foreground if omitted
     - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2227,7 +2267,7 @@ def draw_ellipse(
     - width, height: Bounding box dimensions
     - color: Stroke color; uses current foreground if omitted
     - line_width: Stroke width in pixels, more than 0 and at most 2000 (default 2.0)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2264,7 +2304,7 @@ def fill_rectangle(
     - x, y: Top-left corner
     - width, height: Rectangle dimensions
     - color: Fill color (CSS name, hex, or rgb() string)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2300,7 +2340,7 @@ def fill_ellipse(
     - x, y: Top-left corner of the bounding box
     - width, height: Bounding box dimensions
     - color: Fill color (CSS name, hex, or rgb() string)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2340,7 +2380,7 @@ def gradient_fill(
     - x1, y1: Gradient start point (default top-left 0,0)
     - x2, y2: Gradient end point (defaults to bottom-right of image)
     - gradient_type: "linear" (default) or "radial"
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2429,9 +2469,12 @@ def edit_text(
     - color: New text color (omit to leave unchanged)
     - image_index: Target image index (default 0)
 
-    Returns {status}, plus font (the applied font) when a font name was given,
-    requested_font when it differs from font, and warning when a fallback font
-    was substituted.
+    Returns {status, layer_name}, plus font (the applied font) when a font name was
+    given, requested_font when it differs from font, and warning when a fallback font
+    was substituted. layer_name is the layer's name after the edit: GIMP names a text
+    layer after its text until it is renamed, so new text renames such a layer; a
+    renamed layer keeps its name. A layer that isn't a text layer is an error, and
+    nothing changes.
     """
     try:
         conn = get_gimp_connection()
@@ -2490,7 +2533,7 @@ def apply_drop_shadow(
     - blur_radius: Shadow softness radius (default 10)
     - color: Shadow color (default "black")
     - opacity: Shadow opacity 0-100 (default 60)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2521,7 +2564,7 @@ def apply_gaussian_blur(
 
     Parameters:
     - radius: Blur radius in pixels (default 5.0)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2550,7 +2593,7 @@ def apply_pixelate(
 
     Parameters:
     - block_size: Size of each mosaic block in pixels (default 10)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2583,7 +2626,7 @@ def apply_emboss(
     - azimuth: Light direction in degrees 0-360 (default 315 = top-left)
     - elevation: Light elevation angle 0-90 (default 45)
     - depth: Effect depth/intensity, 1-100 (default 2)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2615,7 +2658,7 @@ def apply_vignette(
     Parameters:
     - softness: Edge softness / fade width, 0.0-1.0 (default 0.8)
     - shape: "circle" (default), "square", "diamond", "horizontal" or "vertical"
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2645,7 +2688,7 @@ def apply_noise(
 
     Parameters:
     - amount: Noise intensity 0.0-1.0 (default 0.2)
-    - layer_name: Target layer; defaults to active layer
+    - layer_name: Target layer; defaults to the selected layer, else the top layer
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -2751,18 +2794,26 @@ def warp_region(
 ) -> dict:
     """Warp / liquify a region of the image by pushing pixels in a direction.
 
-    Uses GEGL warp (GIMP 3 native) with plug-in-iwarp fallback. Ideal for
+    Works like GIMP's Warp Transform tool in "Move pixels" mode. Ideal for
     subtle facial expression edits — e.g. turning a neutral mouth into a smile
-    by pushing the mouth corners upward.
+    by pushing the mouth corners upward. An active selection limits the change.
+    All vectors are applied together as one undo step.
 
     Parameters:
     - vectors: List of warp stroke dicts, each with:
-        - x, y      : center of the warp influence (pixels)
-        - dx, dy    : push direction — negative dy = push upward
-        - radius    : influence radius in pixels (default: 40)
-        - amount    : deform strength 0–1 (default: 0.3)
+        - x, y      : center of the warp influence (image pixels; required)
+        - dx, dy    : push direction — negative dy = push upward (required,
+                      not both 0; no longer than the layer's diagonal plus
+                      the radius)
+        - radius    : influence radius in pixels, 0.5-5000 (default: 40)
+        - amount    : deform strength, above 0 up to 1 (default: 0.3); at 1 the
+                      center moves about the full dx/dy
     - image_index: Which open image to edit (default: 0)
-    - layer_name: Target layer; omit to use the active/top layer
+    - layer_name: Target layer; omit to use the selected layer, else the top layer.
+      A layer group or a layer with locked pixels (its own or its group's) is an error.
+
+    A vector whose influence doesn't reach the layer is an error, and nothing
+    is warped.
 
     Examples — make a character smile:
         warp_region(vectors=[
@@ -2771,7 +2822,7 @@ def warp_region(
             {"x": 255, "y": 370, "dx":  0, "dy": -4, "radius": 22, "amount": 0.30},
         ])
 
-    Returns: {"warped_vectors": N}
+    Returns: {"warped_vectors": N, "layer": name}
     """
     try:
         conn = get_gimp_connection()
@@ -2799,11 +2850,20 @@ def batch_resize(
     """Resize all open images to a common target size.
 
     Parameters:
-    - width / height: Target dimensions in pixels (provide one or both)
-    - scale_factor: Proportional scale (e.g. 0.5 = 50%); overrides width/height if set
-    - maintain_aspect: Preserve aspect ratio when only one dimension is given (default True)
+    - width / height: Target dimensions in whole pixels, above 0 (provide one or both)
+    - scale_factor: Proportional scale, above 0 (e.g. 0.5 = 50%); overrides
+      width/height if set
+    - maintain_aspect: Preserve aspect ratio (default True). With only one
+      dimension the other follows; with both, each image fits inside
+      width x height.
 
-    Returns: {results: [{image_id, old_width, old_height, new_width, new_height}], count}
+    One of width, height or scale_factor is required. Bad values, no open
+    images, or a result above GIMP's 524288-pixel limit for any image are
+    errors, and no image is resized. An image already at its target size is
+    left untouched (scaled: false).
+
+    Returns: {results: [{image_id, old_width, old_height, new_width, new_height,
+    scaled}], count}
     """
     try:
         conn = get_gimp_connection()
@@ -3008,8 +3068,13 @@ def convert_color_mode(
     """Convert an image to a different color mode.
 
     Parameters:
-    - mode: "RGB", "GRAY", or "INDEXED"
-    - num_colors: Number of colors for INDEXED mode (default 256)
+    - mode: "RGB", "RGBA", "GRAY", "GRAYA", or "INDEXED". RGBA and GRAYA also
+            add an alpha channel to every layer. An image already in the
+            requested mode is left as it is.
+    - num_colors: Number of colors for INDEXED mode, 1-256 (default 256), no dithering.
+                  INDEXED needs an 8-bit non-linear image without layer groups.
+                  An image that is already INDEXED keeps its palette; to use
+                  fewer colors, convert it to RGB first.
     - image_index: Target image index (default 0)
 
     Returns status dict.
@@ -3093,9 +3158,12 @@ def get_pixel_color(
     """Get the color of a single pixel.
 
     Parameters:
-    - x, y: Pixel coordinates
+    - x, y: Pixel coordinates relative to the layer's top-left corner (whole numbers).
+      For a layer that covers the canvas at offset (0, 0), these are image
+      coordinates; otherwise subtract the layer's offsets (list_layers). A point
+      outside the layer is an error that gives the layer's size and offsets.
     - image_index: Target image index (default 0)
-    - layer_name: Layer to sample from; defaults to active layer
+    - layer_name: Layer to sample from; defaults to the selected layer, else the top layer
 
     Returns: {color_hex, color_rgb: [r, g, b], alpha}
     - color_hex / color_rgb: 8-bit sRGB values (0-255), i.e. what is shown on
@@ -3123,13 +3191,20 @@ def get_histogram(
     channel: str = "value",
     image_index: int = 0
 ) -> dict:
-    """Get histogram statistics for a channel of the active layer.
+    """Get histogram statistics for a channel of the selected layer (else the top layer).
 
     Parameters:
-    - channel: "value" (all; default), "red", "green", "blue", "alpha"
+    - channel: "value" (the brightest of red, green and blue; default), "luminance"
+      (perceived brightness), "red", "green", "blue", "alpha". A grayscale layer has
+      only "value" and, with an alpha channel, "alpha"; "alpha" needs a layer with an
+      alpha channel.
     - image_index: Target image index (default 0)
 
-    Returns: {mean, median, std_dev, min, max, pixels, count}
+    Returns: {mean, median, std_dev, pixels, count}
+    - mean, median, std_dev: on a 0-255 scale, whatever the image's precision
+    - pixels: number of pixels counted; with a selection, only the selected pixels
+      count, so select_none first for the whole layer
+    - count: pixels in the counted range, which is the full range, so it equals pixels
     """
     try:
         conn = get_gimp_connection()

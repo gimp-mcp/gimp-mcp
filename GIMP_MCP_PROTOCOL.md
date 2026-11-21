@@ -49,9 +49,8 @@ Returns comprehensive information about the GIMP installation and runtime enviro
 Execute GIMP 3.0 API methods through PyGObject console.
 
 **GIMP MCP Protocol:**
-- Use api_path="exec" to execute Python code in GIMP
-- args[0] should be "pyGObject-console" for executing commands
-- args[1] should be array of Python code strings to execute
+- args[0] is "pyGObject-console" to run code, or "pyGObject-eval" to evaluate expressions
+- args[1] is a list of Python code strings, run one after another
 - Commands execute in persistent context - imports and variables persist
 - Always call Gimp.displays_flush() after drawing operations
 
@@ -69,12 +68,14 @@ All tools return MCP-compliant data that AI assistants can process directly.
 ```
 
 ### Parameters Explanation
-- **api_path**: `"exec"` - Accesses GIMP's Procedure Database (PDB) to run a procedure
+- **api_path**: `"exec"`. The plugin doesn't read it.
 - **args**: Array with two elements:
-  - `"pyGObject-console"` - The PyGObject console procedure name
-  - `["<python_code>"]` - Array containing the Python code string to execute
-         all commands are executed in the same process context, 
-         so ["x=5","print(x)"] will work
+  - the mode: `"pyGObject-console"` runs code, `"pyGObject-eval"` evaluates expressions
+    (see [PyGObject Procedure Types](#pygobject-procedure-types))
+  - `["<python_code>", ...]` - a list of Python code strings, run one after another.
+    All commands run in the same persistent context, so `["x=5", "print(x)"]` works.
+    A single string instead of a list is an error.
+- **kwargs**: Not used.
 
 ## Tested Examples
 
@@ -86,7 +87,7 @@ All tools return MCP-compliant data that AI assistants can process directly.
 }
 ```
 
-**Result**: Returns `"hello world"` when successful.
+**Result**: Returns `"hello world\n"` when successful (what the code printed).
 
 ### Simple Expression Evaluation
 ```json
@@ -106,14 +107,19 @@ All tools return MCP-compliant data that AI assistants can process directly.
 - Python code must be properly escaped as a JSON string
 
 ### PyGObject Procedure Types
-- **`pyGObject-console`**: Executes Python code and returns output.
-- **`pyGObject-eval`**: Evaluates Python expressions and returns the actual result value.
+- **`pyGObject-console`**: Executes Python code and returns what it prints, one string per
+  code string.
+- **`pyGObject-eval`**: Evaluates Python expressions and returns each value as a string
+  (`str(value)`). Expressions see the variables earlier commands set. `"python-fu-eval"`
+  works too.
+- Any other mode runs code like `pyGObject-console`.
 
 ### Return Values
 - **pyGObject-console**: Returns command output on success, error messages on failure
-- **pyGObject-eval**: Returns the actual result of the Python expression
+- **pyGObject-eval**: Returns each expression's value as a string (`str(value)`)
 - Print statements from pyGObject-console are returned in MCP response
-- Errors will return error messages or exception details
+- Errors will return error messages or exception details. If a code string raises, the
+  strings before it have run, but their output isn't returned, and the rest don't run.
 
 ### Limitations
 - Commands execute in GIMP's PyGObject environment
@@ -132,9 +138,11 @@ All tools return MCP-compliant data that AI assistants can process directly.
   layers = image.get_layers()  # Returns list of Layer objects
   ```
 
-- **`image.get_active_layer()`**: Gets the active layer from an image
+- **`image.get_selected_layers()`**: Gets the selected layers of an image (GIMP 3 has
+  no `get_active_layer()`)
   ```python
-  active_layer = image.get_active_layer()  # Returns Layer object
+  selected = image.get_selected_layers()  # Returns a list of Layer objects
+  layer = (selected or image.get_layers())[0]  # what the tools use by default
   ```
 
 - **Get foreground color** 
@@ -214,7 +222,7 @@ Gimp.displays_flush()
 ### Non-Working Methods (GIMP 3.0 Changes)
 - **`Gimp.get_active_image()`**: ❌ Does not exist
 - **`Gimp.list_images()`**: ❌ Does not exist  
-- **`Gimp.get_active_layer()`**: ❌ Does not exist (use `image.get_active_layer()` instead)
+- **`Gimp.get_active_layer()`**: ❌ Does not exist, nor does `image.get_active_layer()` (use `image.get_selected_layers()` or `image.get_layers()` instead)
 - **`from gimpfu import *`**: ❌ gimpfu module not available in GIMP 3.0
 - **`Gimp.file_new_for_path()`**: ❌ Use `Gio.File.new_for_path()` instead
 
@@ -354,8 +362,9 @@ metadata = get_image_metadata()
         "width": 1920,
         "height": 1080,
         "has_alpha": false,
-        "blend_mode": "NORMAL",
-        "layer_type": "RGB_IMAGE"
+        "is_group": false,
+        "layer_type": "RGB",
+        "blend_mode": "NORMAL"
       }
     ],
     "channels": [],
@@ -373,6 +382,12 @@ metadata = get_image_metadata()
   }
 }
 ```
+
+`layer_type` is the layer's pixel format: `RGB`, `RGBA`, `GRAY`, `GRAYA`, `INDEXED` or
+`INDEXEDA`. `RGB` and `RGBA` differ only in the alpha channel, so `RGB` there means "RGB
+without alpha"; `basic.base_type` is the image's color mode (`RGB`, `Grayscale` or `Indexed`)
+and says nothing about alpha. `blend_mode` uses the names `create_layer` and
+`set_layer_properties` take.
 
 #### Using `get_gimp_info()`
 ```python
@@ -455,13 +470,31 @@ gimp_info = get_gimp_info()
 - **Host**: localhost (default)
 - **Port**: 9877 (default)
 - **Transport**: TCP socket
-- **Format**: JSON messages
-- **Auto-disconnect**: Configurable (default: true)
+- **Requests**: one JSON object each, ending with a newline (a request without the
+  newline is accepted too)
+- **Replies**: one JSON object per request, in order, each followed by a newline
+- **Auto-disconnect**: after replying, the plug-in closes the connection once every request
+  that has already arrived is answered. Requests sent in one write usually arrive
+  together, but TCP doesn't promise it, and one that arrives after the close is lost. It
+  can also cost the reply before it: closing a connection with unread input makes the
+  system reset it, and the client may lose a reply it hasn't read yet. To
+  send several requests on one connection reliably, send `disable_auto_disconnect` (a bare
+  line, not JSON) first. The connection then stays open until the client closes it or
+  sends nothing for 300 s.
+  This applies only to that connection.
+- **Errors**: a line that isn't JSON or UTF-8, a JSON value that isn't an object, other
+  text after the object on its line (if it arrives together with the object; a complete
+  object is run as soon as it has arrived), or a request left unfinished for 30 s or by
+  the client closing its end, gets a
+  `{"status": "error", "error": "Malformed request: ..."}` reply, and the connection is
+  closed: nothing sent after it runs (so the JSON body of an HTTP request, which a web
+  page can send to this port, never runs). A connection with no request for 300 s is
+  closed.
 
 ### Command Types
 1. **`"get_image_bitmap"`**: Direct bitmap export
-2. **`"disable_auto_disconnect"`**: Keep connection alive
-3. **JSON with `"cmds"`**: Execute command array  
+2. **`"disable_auto_disconnect"`**: Keep this connection open for more requests
+3. **JSON with `"cmds"`**: Execute command array
 4. **JSON with `"params"`**: Structured API calls
 
 ### Error Handling

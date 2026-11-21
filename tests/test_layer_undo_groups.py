@@ -63,8 +63,22 @@ class LayerUndoGroupsTests(unittest.TestCase):
             with self.subTest(options=options):
                 self.calls.reset_mock()
                 result = self.plugin._edit_text(options)
-                self.assertEqual(result, {"status": "success", "results": {"status": "success"}})
-                self.assertEqual(self.calls.mock_calls, [])
+                self.assertEqual(result, {"status": "success", "results": {
+                    "status": "success", "layer_name": self.calls.layer.get_name.return_value}})
+                self.assertEqual(self.calls.mock_calls,
+                                 [call.layer.is_text_layer(), call.layer.get_name()])
+
+    def test_edit_text_rejects_a_layer_that_is_not_a_text_layer_before_undo(self):
+        self.calls.layer.is_text_layer.return_value = False
+        self.calls.layer.get_name.return_value = "plain"
+        for options in ({"text": "X"}, {}):
+            with self.subTest(options=options):
+                self.calls.reset_mock(return_value=False)
+                result = self.plugin._edit_text(options)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("'plain' is not a text layer", result["error"])
+                self.assertEqual(self.calls.mock_calls,
+                                 [call.layer.is_text_layer(), call.layer.get_name()])
 
     def test_edit_text_rejects_invalid_size_before_any_edit(self):
         self.plugin._lookup_pdb = Mock(return_value=self.calls.procedure)
@@ -107,6 +121,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
                     self.assertEqual(
                         self.calls.mock_calls,
                         [
+                            call.layer.is_text_layer(),
                             call.image.undo_group_start(),
                             call.procedure.create_config(),
                             call.procedure.create_config().set_property("layer", self.calls.layer),
@@ -115,6 +130,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
                             call.run_pdb(self.calls.procedure, config),
                             call.image.undo_group_end(),
                             call.flush(),
+                            call.layer.get_name(),
                         ],
                     )
 
@@ -130,6 +146,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
         self.assertEqual(
             self.calls.mock_calls,
             [
+                call.layer.is_text_layer(),
                 call.image.undo_group_start(),
                 call.procedure.create_config(),
                 call.procedure.create_config().set_property("layer", self.calls.layer),
@@ -137,6 +154,7 @@ class LayerUndoGroupsTests(unittest.TestCase):
                 call.run_pdb(self.calls.procedure, config),
                 call.image.undo_group_end(),
                 call.flush(),
+                call.layer.get_name(),
             ],
         )
 

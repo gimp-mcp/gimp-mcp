@@ -322,6 +322,7 @@ def main():
           r.get("status") == "error" and not ops, (r.get("error"), ops))
     parsed.clear()
     ops.clear()
+    img._layer.is_text_layer = lambda: True  # edit_text refuses other layers
     r = p._edit_text({"image_index": 0, "layer_name": "layer", "text": "x", "color": ""})
     check("edit_text color='' changes the text but not the color",
           r.get("status") == "success" and not parsed

@@ -121,25 +121,25 @@ print()
 print("=== Cat 4: Selections ===")
 t('select_rect',    cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
 t('select_ellipse', cmd('select_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
-# Confirm the setup selection is actually active: the
-# fill_layer_clears_selection check below would pass even if there was no
-# selection before the fill.
-_sel = cmd('get_selection_bounds', {'image_index': 0})
+# Confirm the setup selection is actually active, so the
+# fill_layer_keeps_selection check below compares against a real selection.
+_sel_before = cmd('get_selection_bounds', {'image_index': 0})
 chk('selection_active_before_fill_layer',
-    _sel.get('results', {}).get('has_selection') is True, _sel.get('results'))
+    _sel_before.get('results', {}).get('has_selection') is True, _sel_before.get('results'))
 # Regression #23: select_by_color must actually create a selection, not
 # silently no-op while reporting success. Fill a known color and clear any
 # prior selection first, so a leftover selection can't mask a no-op.
 # Assert the setup itself succeeds so a broken fill can't skew the real check.
 t('select_setup_fill', cmd('fill_layer',  {'image_index': 0, 'color': '#ffffff'}))
-# fill_layer documents that it clears any active selection (select-all, fill,
-# select-none). A save/restore of the selection was tried instead, but on
-# GIMP 3.2 it corrupts the selection state when run from a worker thread:
-# the select_item + remove_channel pair leaves the PDB seeing no selection,
-# and every subsequent stroke fails with "no selection to stroke".
+# fill_layer fills the whole layer and leaves the selection as it was (it
+# restores a copy that is never added to the image: an added and removed
+# channel left no layer selected, and later strokes failed with "There is no
+# selection to stroke"; the drawing checks in Cat 6 cover that).
 _sel = cmd('get_selection_bounds', {'image_index': 0})
-chk('fill_layer_clears_selection', _sel.get('results', {}).get('has_selection') is False,
-    _sel.get('results'))
+chk('fill_layer_keeps_selection',
+    _sel.get('results', {}).get('has_selection') is True
+    and _sel.get('results') == _sel_before.get('results'),
+    {'before': _sel_before.get('results'), 'after': _sel.get('results')})
 t('select_setup_none', cmd('select_none', {'image_index': 0}))
 t('select_color',   cmd('select_by_color',  {'image_index': 0, 'color': '#ffffff'}))
 _sel = cmd('get_selection_bounds', {'image_index': 0})
@@ -165,7 +165,7 @@ print()
 print("=== Cat 6: Drawing ===")
 t('fill_layer',     cmd('fill_layer',     {'image_index': 0, 'color': '#ff0000'}))
 t('set_colors',     cmd('set_colors',     {'foreground': '#000000', 'background': '#ffffff'}))
-# fill_layer cleared the selection, so create one for fill_selection.
+# A known selection for fill_selection.
 t('select_for_fill', cmd('select_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20}))
 t('fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground'}))
 # Clear it again so the tools below draw on the whole layer instead of
@@ -441,7 +441,7 @@ def gimp_exec(*lines):
 
 def shadow_alpha(shadow, x, y):
     """Alpha of the Drop Shadow layer at image coordinates (x, y)."""
-    _, ox, oy = shadow['offsets']
+    ox, oy = shadow['offsets']
     return cmd('get_pixel_color', {'image_index': 0, 'layer_name': 'Drop Shadow',
                                    'x': x - ox, 'y': y - oy}).get('results', {}).get('alpha')
 
