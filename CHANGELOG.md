@@ -13,6 +13,10 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- `batch_export` rejects duplicate output paths before writing any files. Include `{index}`
+  in `name_pattern` to give same-named images distinct paths (#161).
+
 ## [0.6.0] - 2026-11-21
 
 ### Fixed

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live test for batch_export when nothing can be exported (#63).
+"""Live checks for batch_export failures and output files (#63, #161).
 
 batch_export reported success with exported: [] when every image failed, and
 a bad name_pattern failed for each image with a bare "'bogus'" (also a
@@ -10,8 +10,10 @@ success). Checks that:
   indexed or attribute one, such as {name[3]}, or one in a format spec) or
   bad syntax is an error naming it, and writes nothing;
 - one image failing among others still succeeds, listing it in errors.
+- two source files with the same base name are rejected before any writes.
+- {index} produces distinct paths and allows overwriting an existing export.
 
-The last check exports every open image, so it runs only when the test's own
+The last checks export every open image, so they run only when the test's own
 two images are the only ones open (it prints SKIP otherwise); the files go to
 a temporary directory that is deleted again.
 
@@ -24,6 +26,7 @@ import shutil
 import socket
 import sys
 import tempfile
+from pathlib import Path
 
 HOST, PORT = '127.0.0.1', int(os.environ.get('GIMP_MCP_PORT', 9877))
 
@@ -76,6 +79,52 @@ def files(path):
     return sorted(os.listdir(path)) if os.path.isdir(path) else []
 
 
+def check_duplicate_names(out_dir, made):
+    """Checks collision rejection and the indexed naming workaround."""
+    source = Path(out_dir) / 'source'
+    fixtures = (
+        ('_BE_PNG', source / 'a' / 'photo.png', 'png'),
+        ('_BE_JPEG', source / 'b' / 'photo.jpg', 'jpeg'),
+    )
+    for _, path, fmt in fixtures:
+        path.parent.mkdir(parents=True)
+        r = cmd('export_image', {'file_path': str(path), 'format': fmt,
+                                 'image_index': index('_BE_OK')})
+        check(r.get('status') == 'success', 'could not create a source file', r)
+    py('_BE_EMPTY.delete()', '_BE_OK.delete()', 'from gi.repository import Gio')
+    for var, path, _ in fixtures:
+        py(f'{var} = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, '
+           f'Gio.File.new_for_path({str(path)!r}))')
+        check(py(f'print({var} is not None)') == 'True', 'could not load the source image', path)
+        made.append(var)
+    indices = [index(var) for var, _, _ in fixtures]
+
+    target = Path(out_dir) / 'duplicate'
+    r = cmd('batch_export', {'output_dir': str(target)})
+    error = r.get('error', '')
+    check(r.get('status') == 'error' and 'photo.png' in error
+          and '{index}' in error
+          and all(f"image {idx} ('photo')" in error for idx in indices),
+          'duplicate output paths were not rejected with both image indices and a workaround', r)
+    check(not target.exists(), 'the rejected batch created its output directory')
+    print('PASS: conflicting destinations are rejected before writing')
+
+    target.mkdir()
+    expected = {target / f'photo_{idx}.png' for idx in indices}
+    for path in expected:
+        path.write_bytes(b'old export')
+    r = cmd('batch_export', {'output_dir': str(target), 'name_pattern': '{name}_{index}'})
+    check(r.get('status') == 'success', 'unique destinations were refused', r)
+    result = r['results']
+    check(result['count'] == 2 and result['errors'] == []
+          and {Path(item['file_path']) for item in result['exported']} == expected,
+          'the indexed batch did not report both destinations', result)
+    check(set(target.iterdir()) == expected
+          and all(path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') for path in expected),
+          'both destinations should contain new PNG exports', files(target))
+    print('PASS: unique destinations export both images and replace existing files')
+
+
 def main():
     out_dir = tempfile.mkdtemp(prefix='gimp-mcp-batch-export-')
     made = []
@@ -112,7 +161,7 @@ def main():
         print("PASS: a bad name_pattern is an error and writes nothing")
 
         if py("print(len(Gimp.get_images()))") != "2":
-            print("SKIP: some-exported case: batch_export without image_index exports every "
+            print("SKIP: multi-image cases: batch_export without image_index exports every "
                   "open image; needs GIMP with no other images open")
             return 0
         target = os.path.join(out_dir, 'all')
@@ -123,6 +172,7 @@ def main():
         check(f"be_{index('_BE_OK')}.png" in files(target), "the good image wasn't exported",
               files(target))
         print("PASS: some images exported is a success that lists the failed ones")
+        check_duplicate_names(out_dir, made)
         return 0
     finally:
         for var in made:

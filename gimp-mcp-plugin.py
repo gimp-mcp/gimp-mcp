@@ -2952,8 +2952,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image_index = self._index(image_index, "image_index")
                 targets = [(image_index, self._get_image(image_index))]
 
-            os.makedirs(output_dir, exist_ok=True)
-            exported = []
+            planned = []
+            destinations: dict[str, tuple[int, str]] = {}
             errors = []
 
             for idx, image in targets:
@@ -2962,6 +2962,26 @@ class MCPPlugin(Gimp.PlugIn):
                     raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{idx}"
                     filename = name_pattern.format(name=raw_name, index=idx) + f".{fmt}"
                     out_path = os.path.join(output_dir, filename)
+                    destination = os.path.normcase(os.path.abspath(out_path))
+                except Exception as ex:
+                    errors.append({"index": idx, "error": str(ex)})
+                    continue
+
+                if destination in destinations:
+                    other_idx, other_name = destinations[destination]
+                    return {
+                        "status": "error",
+                        "error": f"Output path {out_path!r} is shared by image {other_idx} "
+                                 f"({other_name!r}) and image {idx} ({raw_name!r}). "
+                                 "Use {index} in name_pattern to give each image a distinct path.",
+                    }
+                destinations[destination] = (idx, raw_name)
+                planned.append((idx, image, raw_name, out_path))
+
+            os.makedirs(output_dir, exist_ok=True)
+            exported = []
+            for idx, image, raw_name, out_path in planned:
+                try:
                     self._export_to_path(image, out_path, fmt, quality, True)
                     exported.append({
                         "file_path": out_path,
@@ -2972,6 +2992,7 @@ class MCPPlugin(Gimp.PlugIn):
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
 
+            errors.sort(key=lambda error: error["index"])
             # Some images exported is a success that lists the others in
             # errors; none at all is an error (it used to be a success too).
             if not exported:
