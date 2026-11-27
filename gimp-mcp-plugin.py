@@ -33,6 +33,7 @@ import signal
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # gegl:vignette shape
+ASCII_LOWERCASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 # Reported to the MCP server, which warns when it doesn't match its own version.
 # Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
@@ -2962,21 +2963,19 @@ class MCPPlugin(Gimp.PlugIn):
                     raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{idx}"
                     filename = name_pattern.format(name=raw_name, index=idx) + f".{fmt}"
                     out_path = os.path.join(output_dir, filename)
-                    destination = os.path.normcase(os.path.abspath(out_path))
+                    destination = os.path.abspath(out_path)
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
                     continue
 
                 if destination in destinations:
-                    other_idx, other_name = destinations[destination]
-                    return {
-                        "status": "error",
-                        "error": f"Output path {out_path!r} is shared by image {other_idx} "
-                                 f"({other_name!r}) and image {idx} ({raw_name!r}). "
-                                 "Use {index} in name_pattern to give each image a distinct path.",
-                    }
+                    return self._batch_export_collision(out_path, destinations[destination], (idx, raw_name))
                 destinations[destination] = (idx, raw_name)
                 planned.append((idx, image, raw_name, out_path))
+
+            collision = self._batch_export_case_collision(destinations)
+            if collision is not None:
+                return collision
 
             os.makedirs(output_dir, exist_ok=True)
             exported = []
@@ -3004,6 +3003,58 @@ class MCPPlugin(Gimp.PlugIn):
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    @staticmethod
+    def _batch_export_collision(
+        path: str, first: tuple[int, str], second: tuple[int, str],
+    ) -> dict[str, str]:
+        """Reports the images that share an export destination."""
+        first_idx, first_name = first
+        second_idx, second_name = second
+        return {
+            "status": "error",
+            "error": f"Output path {path!r} is shared by image {first_idx} ({first_name!r}) "
+                     f"and image {second_idx} ({second_name!r}). "
+                     "Use {index} in name_pattern to give each image a distinct path.",
+        }
+
+    def _batch_export_case_collision(
+        self, destinations: dict[str, tuple[int, str]],
+    ) -> dict[str, str] | None:
+        """Checks ASCII case-only filename differences within the same directory."""
+        variants: dict[tuple[str, str], tuple[int, str]] = {}
+        case_sensitive_directories: set[str] = set()
+        for path, source in destinations.items():
+            directory, filename = os.path.split(path)
+            key = (directory, filename.translate(ASCII_LOWERCASE))
+            if key not in variants:
+                variants[key] = source
+                continue
+            if directory not in case_sensitive_directories:
+                if self._directory_ignores_case(directory):
+                    return self._batch_export_collision(path, variants[key], source)
+                case_sensitive_directories.add(directory)
+        return None
+
+    @staticmethod
+    def _directory_ignores_case(directory: str) -> bool:
+        """Checks case lookup using a temporary file in the nearest existing directory."""
+        while not os.path.isdir(directory):
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                raise FileNotFoundError(f"Cannot check filename case in {directory!r}")
+            directory = parent
+
+        fd, probe = tempfile.mkstemp(dir=directory, prefix=".gimp-mcp-case-")
+        try:
+            os.close(fd)
+            alternate = os.path.join(directory, os.path.basename(probe).upper())
+            try:
+                return os.path.samefile(probe, alternate)
+            except FileNotFoundError:
+                return False
+        finally:
+            os.unlink(probe)
 
     # =========================================================================
     # CATEGORY 2 — Image Adjustments

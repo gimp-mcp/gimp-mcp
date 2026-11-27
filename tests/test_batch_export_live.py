@@ -12,13 +12,15 @@ success). Checks that:
 - one image failing among others still succeeds, listing it in errors.
 - two source files with the same base name are rejected before any writes.
 - {index} produces distinct paths and allows overwriting an existing export.
+- case-only names follow the case rule on the test output filesystem.
 
 The last checks export every open image, so they run only when the test's own
 two images are the only ones open (it prints SKIP otherwise); the files go to
 a temporary directory that is deleted again.
 
 Requires the GIMP MCP plugin running on localhost:9877 (GIMP_MCP_PORT
-overrides the port). Exits 0 on pass, 1 on fail.
+overrides the port). Set TMPDIR to test on a specific filesystem. Exits 0 on
+pass, 1 on fail.
 """
 import json
 import os
@@ -123,6 +125,48 @@ def check_duplicate_names(out_dir, made):
           and all(path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') for path in expected),
           'both destinations should contain new PNG exports', files(target))
     print('PASS: unique destinations export both images and replace existing files')
+
+    uppercase_source = source / 'c' / 'PHOTO.jpg'
+    uppercase_source.parent.mkdir()
+    shutil.copyfile(fixtures[1][1], uppercase_source)
+    py('_BE_JPEG.delete()',
+       '_BE_JPEG = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, '
+       f'Gio.File.new_for_path({str(uppercase_source)!r}))')
+    check(py('print(_BE_JPEG is not None)') == 'True', 'could not load the uppercase source')
+    check_case_variant_names(Path(out_dir))
+
+
+def check_case_variant_names(out_dir):
+    """Checks the same export against the actual filesystem's case behaviour."""
+    marker = out_dir / 'Case-Marker'
+    marker.touch()
+    case_insensitive = (out_dir / 'CASE-MARKER').exists()
+    marker.unlink()
+
+    before = set(out_dir.iterdir())
+    target = out_dir / 'case-variants'
+    r = cmd('batch_export', {'output_dir': str(target)})
+    if case_insensitive:
+        error = r.get('error', '')
+        check(r.get('status') == 'error' and "('photo')" in error and "('PHOTO')" in error,
+              'case-only names were not rejected on the case-insensitive filesystem', r)
+        check(set(out_dir.iterdir()) == before, 'the rejected batch left files behind', files(out_dir))
+        target.mkdir()
+        existing = target / 'photo.png'
+        existing.write_bytes(b'old export')
+        r = cmd('batch_export', {'output_dir': str(target)})
+        check(r.get('status') == 'error' and set(target.iterdir()) == {existing}
+              and existing.read_bytes() == b'old export',
+              'case-only conflicts changed an existing output directory', r)
+        print('PASS: case-insensitive output rejects case-only conflicts without leaving files')
+    else:
+        check(r.get('status') == 'success' and r['results']['count'] == 2,
+              'case-only names were rejected on the case-sensitive filesystem', r)
+        check(set(files(target)) == {'photo.png', 'PHOTO.png'}, 'case variants were not written',
+              files(target))
+        check(set(out_dir.iterdir()) == before | {target}, 'the batch left probe files behind',
+              files(out_dir))
+        print('PASS: case-sensitive output keeps case-only destinations separate')
 
 
 def main():
