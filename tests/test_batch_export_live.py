@@ -13,6 +13,7 @@ success). Checks that:
 - two source files with the same base name are rejected before any writes.
 - {index} produces distinct paths and allows overwriting an existing export.
 - case-only names follow the case rule on the test output filesystem.
+- aliases to the same output directory are rejected before overwriting a file.
 
 The last checks export every open image, so they run only when the test's own
 two images are the only ones open (it prints SKIP otherwise); the files go to
@@ -126,6 +127,8 @@ def check_duplicate_names(out_dir, made):
           'both destinations should contain new PNG exports', files(target))
     print('PASS: unique destinations export both images and replace existing files')
 
+    check_aliased_directories(Path(out_dir), indices)
+
     uppercase_source = source / 'c' / 'PHOTO.jpg'
     uppercase_source.parent.mkdir()
     shutil.copyfile(fixtures[1][1], uppercase_source)
@@ -134,6 +137,40 @@ def check_duplicate_names(out_dir, made):
        f'Gio.File.new_for_path({str(uppercase_source)!r}))')
     check(py('print(_BE_JPEG is not None)') == 'True', 'could not load the uppercase source')
     check_case_variant_names(Path(out_dir))
+
+
+def check_aliased_directories(out_dir, indices):
+    """Checks collision detection for name patterns containing a directory."""
+    output = out_dir / 'subdirectories'
+    first, second = (output / str(idx) for idx in indices)
+    first.mkdir(parents=True)
+    second.mkdir()
+    params = {'output_dir': str(output), 'name_pattern': '{index}/export'}
+    r = cmd('batch_export', params)
+    check(r.get('status') == 'success' and r['results']['count'] == 2,
+          'distinct subdirectories did not both export', r)
+    expected = {first / 'export.png', second / 'export.png'}
+    check({Path(item['file_path']) for item in r['results']['exported']} == expected
+          and all(path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') for path in expected),
+          'both subdirectories should contain PNG exports', r)
+
+    (second / 'export.png').unlink()
+    second.rmdir()
+    try:
+        second.symlink_to(first, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        print(f'SKIP: cannot create directory symlink: {exc}')
+        return
+    existing = first / 'export.png'
+    existing.write_bytes(b'old export')
+    r = cmd('batch_export', params)
+    error = r.get('error', '')
+    check(r.get('status') == 'error' and 'export.png' in error
+          and all(f"image {idx} ('photo')" in error for idx in indices),
+          'aliased subdirectories were not rejected', r)
+    check(existing.read_bytes() == b'old export' and set(first.iterdir()) == {existing},
+          'the rejected export changed files in the aliased directory', files(first))
+    print('PASS: directory aliases collide without changing the existing export')
 
 
 def check_case_variant_names(out_dir):

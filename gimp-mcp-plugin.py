@@ -2963,7 +2963,9 @@ class MCPPlugin(Gimp.PlugIn):
                     raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{idx}"
                     filename = name_pattern.format(name=raw_name, index=idx) + f".{fmt}"
                     out_path = os.path.join(output_dir, filename)
-                    destination = os.path.abspath(out_path)
+                    # Collapse dot components first, as Gio.File.new_for_path does.
+                    directory, basename = os.path.split(os.path.abspath(out_path))
+                    destination = os.path.join(os.path.realpath(directory), basename)
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
                     continue
