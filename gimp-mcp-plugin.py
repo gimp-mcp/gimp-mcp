@@ -28,6 +28,7 @@ import platform
 import re
 import selectors
 import signal
+import unicodedata
 
 # Constants for configuration and thresholds
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
@@ -2984,7 +2985,7 @@ class MCPPlugin(Gimp.PlugIn):
                 destinations[key] = (directory, source)
                 planned.append((idx, image, raw_name, out_path))
 
-            collision = self._batch_export_case_collision(destinations)
+            collision = self._batch_export_spelling_collision(destinations)
             if collision is not None:
                 return collision
 
@@ -3049,22 +3050,55 @@ class MCPPlugin(Gimp.PlugIn):
             directory = parent
         return (self._export_path_identity(directory) or directory, relative_path), directory
 
-    def _batch_export_case_collision(
+    def _batch_export_spelling_collision(
         self, destinations: dict[_ExportDestinationKey, tuple[str, tuple[int, str]]],
     ) -> dict[str, str] | None:
-        """Checks ASCII case-only path differences below the same directory."""
-        variants: dict[_ExportDestinationKey, tuple[int, str]] = {}
+        """Checks ASCII case and Unicode normalization variants using filesystem lookup."""
+        variants: dict[_ExportDestinationKey, list[tuple[str, tuple[int, str]]]] = {}
+        for (directory_id, relative_path), (_, source) in destinations.items():
+            spelling = unicodedata.normalize("NFD", relative_path).translate(ASCII_LOWERCASE)
+            variants.setdefault((directory_id, spelling), []).append((relative_path, source))
+
         case_sensitive_directories: set[str | _ExportPathIdentity] = set()
-        for (directory_id, relative_path), (directory, source) in destinations.items():
-            key = (directory_id, relative_path.translate(ASCII_LOWERCASE))
-            if key not in variants:
-                variants[key] = source
+        for (directory_id, _), group in variants.items():
+            if len(group) < 2:
                 continue
+            first_path, first_source = group[0]
+            directory, _ = destinations[(directory_id, first_path)]
+            first_ascii = first_path.translate(ASCII_LOWERCASE)
+            if any(path.translate(ASCII_LOWERCASE) != first_ascii for path, _ in group[1:]):
+                collision = self._probe_export_spellings(directory, group)
+                if collision is not None:
+                    return collision
+                continue
+
             if directory_id not in case_sensitive_directories:
                 if self._directory_ignores_case(directory):
-                    path = os.path.join(directory, relative_path)
-                    return self._batch_export_collision(path, variants[key], source)
+                    second_path, second_source = group[1]
+                    path = os.path.join(directory, second_path)
+                    return self._batch_export_collision(path, first_source, second_source)
                 case_sensitive_directories.add(directory_id)
+        return None
+
+    def _probe_export_spellings(
+        self, directory: str, variants: list[tuple[str, tuple[int, str]]],
+    ) -> dict[str, str] | None:
+        """Tests the actual path spellings in a private directory on the same filesystem."""
+        with tempfile.TemporaryDirectory(dir=directory, prefix=".gimp-mcp-spelling-") as probe:
+            created: list[tuple[str, tuple[int, str]]] = []
+            for relative_path, source in variants:
+                path = os.path.join(probe, relative_path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                try:
+                    with open(path, "xb"):
+                        pass
+                except FileExistsError:
+                    for previous, previous_source in created:
+                        if os.path.samefile(path, previous):
+                            destination = os.path.join(directory, relative_path)
+                            return self._batch_export_collision(destination, previous_source, source)
+                    raise
+                created.append((path, source))
         return None
 
     @staticmethod

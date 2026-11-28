@@ -15,6 +15,7 @@ success). Checks that:
 - case-only names follow the case rule on the test output filesystem.
 - aliases to the same output directory are rejected before overwriting a file.
 - symbolic and hard links to a shared output file are rejected before writing.
+- Unicode normalization variants follow the output filesystem's lookup rules.
 
 The last checks export every open image, so they run only when the test's own
 two images are the only ones open (it prints SKIP otherwise); the files go to
@@ -140,6 +141,7 @@ def check_duplicate_names(out_dir, made):
     check(py('print(_BE_JPEG is not None)') == 'True', 'could not load the uppercase source')
     check_case_variant_names(Path(out_dir))
     check_case_variant_directories(Path(out_dir))
+    check_normalization_variants(Path(out_dir), fixtures)
 
 
 def check_aliased_directories(out_dir, indices):
@@ -276,6 +278,48 @@ def check_case_variant_directories(out_dir):
           and all(path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') for path in expected),
           'case-only directories did not each receive a PNG export', r)
     print('PASS: distinct case-only directories both receive an export')
+
+
+def check_normalization_variants(out_dir, fixtures):
+    """Checks canonical equivalents with and without an ASCII case difference."""
+    examples = (
+        ('normalization', ('\u00e9', 'e\u0301')),
+        ('normalization-and-case', ('A-\u00e9', 'a-e\u0301')),
+    )
+    for test_name, names in examples:
+        for (var, src, _), name in zip(fixtures, names):
+            path = src.with_name(name + src.suffix)
+            shutil.copyfile(src, path)
+            py(f'{var}.delete()',
+               f'{var} = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, '
+               f'Gio.File.new_for_path({str(path)!r}))')
+            check(py(f'print({var}.get_file().get_basename() == {path.name!r})') == 'True',
+                  'GIMP did not retain the source name', path)
+
+        first_name, second_name = (f'{name}.png' for name in names)
+        with tempfile.TemporaryDirectory(dir=out_dir) as probe:
+            (Path(probe) / first_name).touch()
+            alias = (Path(probe) / second_name).exists()
+        before = set(out_dir.iterdir())
+        target = out_dir / test_name
+        r = cmd('batch_export', {'output_dir': str(target)})
+        if alias:
+            error = r.get('error', '')
+            check(r.get('status') == 'error' and all(repr(name) in error for name in names),
+                  f'{test_name} aliases were not rejected', r)
+            check(set(out_dir.iterdir()) == before,
+                  f'a rejected {test_name} export left files or directories behind', files(out_dir))
+        else:
+            first, second = target / first_name, target / second_name
+            check(r.get('status') == 'success' and r['results']['count'] == 2
+                  and len(files(target)) == 2
+                  and all(path.is_file() and path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+                          for path in (first, second))
+                  and not first.samefile(second),
+                  f'distinct {test_name} outputs did not both export', r)
+            check(set(out_dir.iterdir()) == before | {target},
+                  f'a successful {test_name} export left probe files behind', files(out_dir))
+        print(f'PASS: {test_name} variants follow the output filesystem')
 
 
 def main():
