@@ -946,9 +946,10 @@ def batch_export(
     - errors: list of {index, error} for images that failed to export
     When no image could be exported, the call fails with each image's error instead.
     If name_pattern uses fields other than {name} and {index}, or two images share
-    an output path, the batch stops before writing export files. ASCII case variants
-    of the same filename conflict in a case-insensitive directory. Include {index} to
-    give same-named images distinct paths. A successful export can replace an existing file.
+    an output destination, including via symbolic or hard links, the batch stops before
+    writing export files. ASCII case variants also conflict on case-insensitive filesystems.
+    Include {index} to give same-named images distinct paths.
+    A successful export can replace an existing file.
     """
     try:
         params: dict = {

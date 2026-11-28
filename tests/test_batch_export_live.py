@@ -14,6 +14,7 @@ success). Checks that:
 - {index} produces distinct paths and allows overwriting an existing export.
 - case-only names follow the case rule on the test output filesystem.
 - aliases to the same output directory are rejected before overwriting a file.
+- symbolic and hard links to a shared output file are rejected before writing.
 
 The last checks export every open image, so they run only when the test's own
 two images are the only ones open (it prints SKIP otherwise); the files go to
@@ -128,6 +129,7 @@ def check_duplicate_names(out_dir, made):
     print('PASS: unique destinations export both images and replace existing files')
 
     check_aliased_directories(Path(out_dir), indices)
+    check_linked_destinations(Path(out_dir), indices)
 
     uppercase_source = source / 'c' / 'PHOTO.jpg'
     uppercase_source.parent.mkdir()
@@ -137,6 +139,7 @@ def check_duplicate_names(out_dir, made):
        f'Gio.File.new_for_path({str(uppercase_source)!r}))')
     check(py('print(_BE_JPEG is not None)') == 'True', 'could not load the uppercase source')
     check_case_variant_names(Path(out_dir))
+    check_case_variant_directories(Path(out_dir))
 
 
 def check_aliased_directories(out_dir, indices):
@@ -204,6 +207,75 @@ def check_case_variant_names(out_dir):
         check(set(out_dir.iterdir()) == before | {target}, 'the batch left probe files behind',
               files(out_dir))
         print('PASS: case-sensitive output keeps case-only destinations separate')
+
+
+def check_linked_destinations(out_dir, indices):
+    """Checks that links to the same destination cannot cause two exports."""
+    for kind in ('symlink', 'dangling-symlink', 'hardlink'):
+        output = out_dir / kind
+        output.mkdir()
+        first, second = (output / f'photo_{idx}.png' for idx in indices)
+        expected = {second}
+        if kind != 'dangling-symlink':
+            first.write_bytes(b'old export')
+            expected.add(first)
+        try:
+            if kind == 'hardlink':
+                second.hardlink_to(first)
+            else:
+                second.symlink_to(first.name)
+        except (NotImplementedError, OSError) as exc:
+            print(f'SKIP: cannot create {kind}: {exc}')
+            continue
+
+        r = cmd('batch_export', {'output_dir': str(output), 'name_pattern': '{name}_{index}'})
+        error = r.get('error', '')
+        check(r.get('status') == 'error'
+              and all(f"image {idx} ('photo')" in error for idx in indices),
+              f'{kind} destinations were not rejected', r)
+        check(set(output.iterdir()) == expected,
+              f'conflicting {kind} destinations changed the file listing', files(output))
+        if kind != 'dangling-symlink':
+            check(first.read_bytes() == second.read_bytes() == b'old export'
+                  and first.samefile(second),
+                  f'conflicting {kind} destinations changed the existing export')
+        else:
+            check(second.is_symlink() and second.readlink() == Path(first.name),
+                  'the rejected batch changed the dangling symlink')
+        print(f'PASS: {kind} destinations collide without writing files')
+
+
+def check_case_variant_directories(out_dir):
+    """Checks identical filenames in parents whose spellings differ only in case."""
+    output = out_dir / 'case-directories'
+    first, second = output / 'photo', output / 'PHOTO'
+    first.mkdir(parents=True)
+    if second.exists():
+        for pattern in ('{name}/export', '{name}/{name}'):
+            r = cmd('batch_export', {'output_dir': str(output), 'name_pattern': pattern})
+            error = r.get('error', '')
+            check(r.get('status') == 'error' and "('photo')" in error and "('PHOTO')" in error,
+                  f'case-aliased directories were not rejected for {pattern}', r)
+        check(files(first) == [], 'the rejected batch wrote files in the aliased directory',
+              files(first))
+        new_dir = output / 'fresh' / 'photo'
+        r = cmd('batch_export', {'output_dir': str(new_dir), 'name_pattern': '../{name}/export'})
+        error = r.get('error', '')
+        check(r.get('status') == 'error' and "('photo')" in error and "('PHOTO')" in error,
+              'case-aliased directories were not rejected before directory creation', r)
+        check(not new_dir.parent.exists(), 'the rejected batch created output directories')
+        print('PASS: case-aliased directories collide before the first export')
+        return
+
+    second.mkdir()
+    r = cmd('batch_export', {'output_dir': str(output), 'name_pattern': '{name}/export'})
+    check(r.get('status') == 'success' and r['results']['count'] == 2,
+          'distinct case-only directories did not both export', r)
+    expected = {first / 'export.png', second / 'export.png'}
+    check({Path(item['file_path']) for item in r['results']['exported']} == expected
+          and all(path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') for path in expected),
+          'case-only directories did not each receive a PNG export', r)
+    print('PASS: distinct case-only directories both receive an export')
 
 
 def main():

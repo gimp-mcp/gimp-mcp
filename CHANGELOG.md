@@ -14,9 +14,9 @@ right command when the versions differ.
 ## [Unreleased]
 
 ### Fixed
-- `batch_export` rejects duplicate paths before writing export files, including ASCII
-  case variants of the same filename in a case-insensitive directory. Include `{index}`
-  in `name_pattern` to give same-named images distinct paths (#161).
+- `batch_export` rejects duplicate destinations before writing export files, including
+  symbolic links, hard links, and ASCII case variants on case-insensitive filesystems.
+  Include `{index}` in `name_pattern` to give same-named images distinct paths (#161).
 
 ## [0.6.0] - 2026-11-21
 
