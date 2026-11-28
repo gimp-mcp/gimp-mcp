@@ -945,8 +945,12 @@ def batch_export(
     - count: number of files written
     - errors: list of {index, error} for images that failed to export
     When no image could be exported, the call fails with each image's error instead.
-    A name_pattern with fields other than {name} and {index} is an error, and
-    nothing is exported.
+    If name_pattern uses fields other than {name} and {index}, or two images share
+    an output destination, including via symbolic or hard links, the batch stops before
+    writing export files. ASCII case variants and canonically equivalent Unicode
+    spellings also conflict if the output filesystem treats them as the same path.
+    Include {index} to give same-named images distinct paths.
+    A successful export can replace an existing file.
     """
     try:
         params: dict = {

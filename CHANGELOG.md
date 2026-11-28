@@ -13,6 +13,12 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- `batch_export` rejects duplicate destinations before writing export files, including
+  symbolic links, hard links, and ASCII case or canonical Unicode variants that
+  refer to the same file on the output filesystem.
+  Include `{index}` in `name_pattern` to give same-named images distinct paths (#161).
+
 ## [0.6.0] - 2026-11-21
 
 ### Fixed

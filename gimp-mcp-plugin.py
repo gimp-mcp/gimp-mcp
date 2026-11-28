@@ -28,11 +28,15 @@ import platform
 import re
 import selectors
 import signal
+import unicodedata
 
 # Constants for configuration and thresholds
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # gegl:vignette shape
+ASCII_LOWERCASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_ExportPathIdentity = tuple[int, int]
+_ExportDestinationKey = tuple[str | _ExportPathIdentity, str]
 
 # Reported to the MCP server, which warns when it doesn't match its own version.
 # Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
@@ -2952,8 +2956,9 @@ class MCPPlugin(Gimp.PlugIn):
                 image_index = self._index(image_index, "image_index")
                 targets = [(image_index, self._get_image(image_index))]
 
-            os.makedirs(output_dir, exist_ok=True)
-            exported = []
+            planned = []
+            destinations: dict[_ExportDestinationKey, tuple[str, tuple[int, str]]] = {}
+            existing_files: dict[_ExportPathIdentity, tuple[int, str]] = {}
             errors = []
 
             for idx, image in targets:
@@ -2962,6 +2967,32 @@ class MCPPlugin(Gimp.PlugIn):
                     raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{idx}"
                     filename = name_pattern.format(name=raw_name, index=idx) + f".{fmt}"
                     out_path = os.path.join(output_dir, filename)
+                    # Collapse dot components first, as Gio.File.new_for_path does.
+                    destination = os.path.realpath(os.path.abspath(out_path))
+                    key, directory = self._export_destination_key(destination)
+                    file_id = self._export_path_identity(destination)
+                except Exception as ex:
+                    errors.append({"index": idx, "error": str(ex)})
+                    continue
+
+                source = (idx, raw_name)
+                if key in destinations:
+                    return self._batch_export_collision(out_path, destinations[key][1], source)
+                if file_id is not None:
+                    if file_id in existing_files:
+                        return self._batch_export_collision(out_path, existing_files[file_id], source)
+                    existing_files[file_id] = source
+                destinations[key] = (directory, source)
+                planned.append((idx, image, raw_name, out_path))
+
+            collision = self._batch_export_spelling_collision(destinations)
+            if collision is not None:
+                return collision
+
+            os.makedirs(output_dir, exist_ok=True)
+            exported = []
+            for idx, image, raw_name, out_path in planned:
+                try:
                     self._export_to_path(image, out_path, fmt, quality, True)
                     exported.append({
                         "file_path": out_path,
@@ -2972,6 +3003,7 @@ class MCPPlugin(Gimp.PlugIn):
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
 
+            errors.sort(key=lambda error: error["index"])
             # Some images exported is a success that lists the others in
             # errors; none at all is an error (it used to be a success too).
             if not exported:
@@ -2983,6 +3015,105 @@ class MCPPlugin(Gimp.PlugIn):
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    @staticmethod
+    def _batch_export_collision(
+        path: str, first: tuple[int, str], second: tuple[int, str],
+    ) -> dict[str, str]:
+        """Reports the images that share an export destination."""
+        first_idx, first_name = first
+        second_idx, second_name = second
+        return {
+            "status": "error",
+            "error": f"Output path {path!r} is shared by image {first_idx} ({first_name!r}) "
+                     f"and image {second_idx} ({second_name!r}). "
+                     "Choose distinct destinations, for example with {index} in name_pattern.",
+        }
+
+    @staticmethod
+    def _export_path_identity(path: str) -> _ExportPathIdentity | None:
+        """Returns the filesystem identity of an existing path when available."""
+        try:
+            info = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        return (info.st_dev, info.st_ino) if info.st_ino else None
+
+    def _export_destination_key(self, destination: str) -> tuple[_ExportDestinationKey, str]:
+        """Keys a destination relative to the nearest existing directory."""
+        directory, relative_path = os.path.split(destination)
+        while not os.path.isdir(directory):
+            parent, component = os.path.split(directory)
+            if parent == directory:
+                raise FileNotFoundError(f"Cannot find an existing parent for {destination!r}")
+            relative_path = os.path.join(component, relative_path)
+            directory = parent
+        return (self._export_path_identity(directory) or directory, relative_path), directory
+
+    def _batch_export_spelling_collision(
+        self, destinations: dict[_ExportDestinationKey, tuple[str, tuple[int, str]]],
+    ) -> dict[str, str] | None:
+        """Checks ASCII case and Unicode normalization variants using filesystem lookup."""
+        variants: dict[_ExportDestinationKey, list[tuple[str, tuple[int, str]]]] = {}
+        for (directory_id, relative_path), (_, source) in destinations.items():
+            spelling = unicodedata.normalize("NFD", relative_path).translate(ASCII_LOWERCASE)
+            variants.setdefault((directory_id, spelling), []).append((relative_path, source))
+
+        case_sensitive_directories: set[str | _ExportPathIdentity] = set()
+        for (directory_id, _), group in variants.items():
+            if len(group) < 2:
+                continue
+            first_path, first_source = group[0]
+            directory, _ = destinations[(directory_id, first_path)]
+            first_ascii = first_path.translate(ASCII_LOWERCASE)
+            if any(path.translate(ASCII_LOWERCASE) != first_ascii for path, _ in group[1:]):
+                collision = self._probe_export_spellings(directory, group)
+                if collision is not None:
+                    return collision
+                continue
+
+            if directory_id not in case_sensitive_directories:
+                if self._directory_ignores_case(directory):
+                    second_path, second_source = group[1]
+                    path = os.path.join(directory, second_path)
+                    return self._batch_export_collision(path, first_source, second_source)
+                case_sensitive_directories.add(directory_id)
+        return None
+
+    def _probe_export_spellings(
+        self, directory: str, variants: list[tuple[str, tuple[int, str]]],
+    ) -> dict[str, str] | None:
+        """Tests the actual path spellings in a private directory on the same filesystem."""
+        with tempfile.TemporaryDirectory(dir=directory, prefix=".gimp-mcp-spelling-") as probe:
+            created: list[tuple[str, tuple[int, str]]] = []
+            for relative_path, source in variants:
+                path = os.path.join(probe, relative_path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                try:
+                    with open(path, "xb"):
+                        pass
+                except FileExistsError:
+                    for previous, previous_source in created:
+                        if os.path.samefile(path, previous):
+                            destination = os.path.join(directory, relative_path)
+                            return self._batch_export_collision(destination, previous_source, source)
+                    raise
+                created.append((path, source))
+        return None
+
+    @staticmethod
+    def _directory_ignores_case(directory: str) -> bool:
+        """Checks case lookup using a temporary file in an existing directory."""
+        fd, probe = tempfile.mkstemp(dir=directory, prefix=".gimp-mcp-case-")
+        try:
+            os.close(fd)
+            alternate = os.path.join(directory, os.path.basename(probe).upper())
+            try:
+                return os.path.samefile(probe, alternate)
+            except FileNotFoundError:
+                return False
+        finally:
+            os.unlink(probe)
 
     # =========================================================================
     # CATEGORY 2 — Image Adjustments
